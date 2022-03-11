@@ -1,0 +1,1214 @@
+---
+title: "FLT3-ITD Unsupervised Clustering"
+author: "Jenny Smith"
+date: "9/28/21"
+output: html_document
+---
+
+# Set-up 
+
+```{r setup, cache = FALSE, include = FALSE}
+require(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2021.04.01_FLT3.ITD_Cooperating_Mutations/"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),
+                      tidy=TRUE,
+                      fig.align='center',
+                      fig.width = 10, fig.height = 10)
+node=Sys.info()[["nodename"]]
+if(!grepl("local", node)){
+  print(node)
+  options(bitmapType = 'cairo')
+  grDevices::X11.options(type='cairo')
+}
+
+options(stringsAsFactors = FALSE)
+table = function (..., useNA = 'ifany') base::table(..., useNA = useNA)
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+
+library(ggplot2)
+library(gridExtra)
+library(patchwork)
+library(ggpubr)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(REDCapR)
+
+library(DeGSEA)
+library(edgeR)
+
+getwd()
+```
+
+
+# Read in the counts
+
+```{r}
+genome <- "GRCh38"
+```
+
+## GRCh38 
+
+```{r}
+current_files <- dir(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/Kallisto_GRCh38_Gencode_v29/"))
+# current_files
+    
+
+if(genome=="GRCh38"){
+    cts_grch38_file <- grep("_RBD_.+scaledTPM_counts.RDS", current_files, value=TRUE)
+    cts_grch38 <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/Kallisto_GRCh38_Gencode_v29/",cts_grch38_file))
+    cts_grch38_ids <- cts_grch38[,grep("gene_id|gene_name", colnames(cts_grch38))]
+    
+    cts_grch38 <- as.data.frame(cts_grch38)
+    rownames(cts_grch38) <-  cts_grch38_ids$gene_name
+    cts_grch38 <- cts_grch38[,-grep("gene_id|gene_name", colnames(cts_grch38))]
+    
+    # head(cts_grch38[,1:5])
+    dim(cts_grch38) #58263  3021 
+    
+    ### TPM
+    TPM_grch38_file <- grep("_RBD_.+Abundance_TPM", current_files, value=TRUE)
+    TPM_grch38 <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/Kallisto_GRCh38_Gencode_v29/",TPM_grch38_file))
+    TPM_grch38_ids <- TPM_grch38[,grep("gene_id|gene_name", colnames(TPM_grch38))]
+    
+    TPM_grch38 <- as.data.frame(TPM_grch38)
+    rownames(TPM_grch38) <-  TPM_grch38_ids$gene_id
+    TPM_grch38 <- TPM_grch38[,-grep("gene_id|gene_name", colnames(TPM_grch38))]
+    
+    
+    # head(TPM_grch38)
+    dim(TPM_grch38) #58263  3021
+}
+```
+
+
+# ClinData
+
+* I need a dynamic title for each project / subproject
+* I need to use the YAML date object to create a single CDE to be used for the entirety of the project 
+* how can I easily update the project CDEs? 
+
+```{r message=FALSE}
+#https://cran.r-project.org/web/packages/REDCapR/vignettes/workflow-read.html 
+project <- "FLT3-ITD_Cooperating_Mutations"
+
+if(project==""){
+  stop("Must include Project name!")
+  
+}else{
+  current_cde_database <- paste("TARGET_AML_CDEs_For_Project",project, ".RDS", sep="_")
+  
+  if(file.exists(current_cde_database)){
+    merged <- readRDS(current_cde_database)
+      
+  }else{
+    path_credential <- file.path(HOME,".redcap")
+    project_id <- 1295
+  
+    credential  <- REDCapR::retrieve_credential_local(
+      path_credential = path_credential,
+      project_id = project_id)
+    
+    #takes about 30 sec to download. 
+    merged <- REDCapR::redcap_read(redcap_uri = credential$redcap_uri, 
+                          token = credential$token, 
+                          raw_or_label_headers = 'label')
+    if(merged$success){
+      merged <- data.frame(merged$data, check.names=TRUE) #remove the white spaces  (will this even work??)
+      saveRDS(merged, current_cde_database)
+    }
+    
+    #Create a simple log file from the day the project starts
+    cat(c(paste("Date:", Sys.Date()),
+          paste("cts:", cts_grch38_file),
+          paste("tpm:", TPM_grch38_file), 
+          paste("CDE:", current_cde_database)),
+          sep = "\n", 
+          file = paste(project, Sys.Date(), ".log", sep="_"))
+    
+  }
+  
+  #keep a list of the ineligable patiens to remove if necessary
+  inelig <- merged %>% 
+    filter(Eligibility.Comments == "remove") %>% 
+    pull(USI)
+  
+  #Filter those who are eligible for the study
+  merged <- merged %>% 
+    filter(Eligibility.Comments != "remove")
+  
+  
+  dim(merged) #3526  156
+  # head(merged)
+}
+```
+
+```{r}
+sample_info <- read.csv(file.path(TARGET, "SequencingDataMatrix/TARGET_AML_Ribodepleted_Manifest_08.12.21.csv"))  %>% 
+  filter(!USI %in% inelig)
+
+dim(sample_info)
+```
+
+```{r}
+orig <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_05.21.21.csv")) %>% 
+         filter(Eligibility_Comments != "remove")
+
+dim(orig)
+
+
+#### OKAY ####
+# check <- orig %>% 
+#   select(USI, FLT3.ITD.positive., NPM.mutation., CEBPA.mutation., WT1.mutation.) %>% 
+#   left_join(., select(merged, USI,  FLT3.ITD.positive., NPM.mutation., CEBPA.mutation., WT1.mutation.),
+#             by="USI") %>% 
+#   select(colnames(.)[order(colnames(.))])
+
+
+# check
+# identical(check$FLT3.ITD.positive..x, check$FLT3.ITD.positive..y)
+# identical(check$NPM.mutation..x, check$NPM.mutation..y)
+# identical(check$CEBPA.mutation..x, check$CEBPA.mutation..y)
+# identical(check$WT1.mutation..x, check$WT1.mutation..y)
+```
+
+```{r}
+cohort <- openxlsx::read.xlsx("pts_3033_for_FLT3_Manuscript_Regs_COG.xlsx") %>% 
+  mutate_all(as.character) %>% 
+  left_join(., select(orig,Reg., USI), by=c("reg_no"="Reg.")) %>% 
+  arrange(USI)
+
+head(cohort)
+# dim(cohort) #3033    1
+# any(is.na(cohort$USI))
+# View(cohort)
+```
+
+
+# Select Samples
+
+```{r}
+#A function to make the mutation columns contain the mutation name instead of  "Yes"
+convert_yes <- function(mut_column){
+  gsub("Yes", as.character(substitute(mut_column)), mut_column) %>%
+    gsub(".positive.|.mutation.", "+", .) %>% 
+    gsub("No$|None$|Unknown", NA_character_, .)
+}
+```
+
+```{r}
+samples <- sample_info %>% 
+  left_join(., select(merged, USI, FLT3.ITD.positive.,WT1.mutation.,
+                      NPM.mutation.,CEBPA.mutation., trisomy.8, ISCN), 
+            by="USI") %>% 
+  filter(grepl("^AML$|NBM|CD34_PB", Group), Time_point != "AML") %>% 
+  filter(Group=="NBM" |  Group == "CD34_PB" | USI %in% cohort$USI) %>%
+  filter(!grepl("_replicate", Sample)) %>% 
+  filter(Sample %in% colnames(cts_grch38)) %>% 
+  
+  mutate_at(vars(Time_point), ~factor(., 
+                                      levels=c("diagnostic","relapse","remission",
+                                               "NBM","CD34_PB"))) %>% 
+  mutate_at(vars(Additional.Fusions.CNV), ~ifelse(.=="Unknown", NA, .)) %>% 
+  mutate_at(vars(trisomy.8), ~case_when(
+    .=="Unknown" & ISCN != "Unknown" ~ NA_character_,
+    TRUE ~ .)) %>% 
+  arrange(Time_point, desc(FLT3.ITD.positive.)) %>% 
+  
+  #Create a column with the co-occuring mutations
+  mutate(across(.cols = c(FLT3.ITD.positive.,WT1.mutation., NPM.mutation.,CEBPA.mutation.),
+                .fns = convert_yes, 
+                .names="{.col}_edit")) %>% 
+  #clean up the Primary.Fusion to convert "None" to NA
+  mutate(Primary.Fusion2=gsub("None|Unknown",NA_character_, Primary.Fusion)) %>%
+  unite(col="FLT3.Groups", Primary.Fusion2,matches("_edit"), sep="/", remove=TRUE, na.rm=TRUE) %>% 
+  
+  #Clean up the groups to retain only those of high risk (poor risk)  for the plots
+  mutate(FLT3.Groups_PoorRisk=case_when(
+    #Define poor risk groups 
+    grepl("^NUP98-NSD1\\/FLT3", FLT3.Groups,fixed = F) ~ FLT3.Groups,
+    grepl("^FLT3.ITD\\+\\/WT1\\+$", FLT3.Groups, fixed = F) ~ FLT3.Groups,
+    grepl("FLT3.ITD\\+\\/WT1\\+", FLT3.Groups) ~ "FLT3.ITD+/WT1+",
+    grepl("DEK-NUP214\\/FLT3.ITD\\+$", FLT3.Groups, fixed = F) ~ FLT3.Groups,
+    
+    #Define favorable co-occuring muts
+    grepl("FLT3.ITD\\+\\/NPM\\+$|FLT3.ITD\\+\\/CEBPA\\+$|CBFB-MYH11\\/FLT3.ITD\\+$|RUNX1-RUNX1T1\\/FLT3.ITD\\+$", 
+          FLT3.Groups, fixed = F) ~ "Low risk/FLT3-ITD+",
+    
+    grepl("FLT3.ITD\\+", FLT3.Groups) ~ "All others/FLT3.ITD+",
+    TRUE ~ AML_Subtype)) %>%
+  
+  #Clean up the groups to retain those with favorable (low risk) risk for the plots
+  mutate(FLT3.Groups_FavRisk=case_when(
+    #Poor risk
+    grepl("NUP98-NSD1\\/FLT3", FLT3.Groups,fixed = F) ~ "High risk/FLT3-ITD+",
+    grepl("^FLT3.ITD\\+\\/WT1\\+$", FLT3.Groups, fixed = F) ~ "High risk/FLT3-ITD+",
+    grepl("FLT3.ITD\\+\\/WT1\\+", FLT3.Groups) ~ "High risk/FLT3-ITD+",
+    grepl("DEK-NUP214\\/FLT3.ITD\\+$", FLT3.Groups, fixed = F) ~ FLT3.Groups,
+    
+     #Define favorable co-occuring muts
+    grepl("FLT3.ITD\\+\\/NPM\\+$|FLT3.ITD\\+\\/CEBPA\\+$", FLT3.Groups, fixed = F) ~ "NPM+ or CEBPA+/FLT3-ITD+",
+    grepl("CBFB-MYH11\\/FLT3.ITD\\+$", FLT3.Groups) ~ FLT3.Groups,
+    grepl("RUNX1-RUNX1T1\\/FLT3.ITD\\+$", FLT3.Groups) ~ FLT3.Groups, 
+    
+    grepl("FLT3.ITD\\+", FLT3.Groups) ~  "All others/FLT3.ITD+",
+    TRUE ~ AML_Subtype)) %>% 
+  
+  mutate_at(vars(Batch), ~gsub("rlps[1-4]", "rlps", .)) %>% 
+  mutate(USI1=USI, 
+         USI=Sample) %>% 
+  
+  select(USI, Sample, Protocol,Time_point,
+         matches("FLT3.Groups"),
+         FLT3.ITD.positive.,Primary.Fusion, WT1.mutation.,
+         NPM.mutation.,CEBPA.mutation.,trisomy.8, Primary.Fusion,
+         Additional.Fusions.CNV,ISCN,
+         everything())
+  
+
+
+# head(samples)
+dim(samples) # 2284   28
+# write.csv(select(samples,-Reg.), "FLT3.ITD_Manuscript_Cohort_with_RNAseq_mutations_and_fusion_info.csv", row.names = FALSE)
+```
+
+```{r}
+# samples %>% 
+#   filter(FLT3.ITD.positive.=="Yes") %>% 
+#   group_by(FLT3.Groups_PoorRisk) %>% 
+#   count() %>% 
+#   ungroup() %>% 
+#   # filter(!grepl("All|Low", FLT3.Groups_PoorRisk)) %>% 
+#   mutate(Total=sum(n))
+# 
+# samples %>% 
+#   filter(FLT3.ITD.positive.=="Yes") %>% 
+#   group_by(FLT3.Groups_FavRisk) %>% 
+#   count() %>% 
+#   ungroup() %>% 
+#   mutate(Total=sum(n))
+```
+
+
+```{r}
+diagnostic_samples <- samples %>% 
+  filter(grepl("NBM|CD34_PB|diagnostic", Time_point)) %>% 
+  group_by(FLT3.Groups_PoorRisk, Batch) %>% 
+  mutate(Batch_noSingletons=case_when(
+    n() < 2 ~ "dx2", 
+    TRUE ~ Batch)) %>% 
+  ungroup() %>% 
+  mutate_at(vars(FLT3.Groups_PoorRisk, FLT3.Groups_FavRisk), ~case_when(
+    FLT3.ITD.positive. == "Yes" ~ .,
+    grepl("NBM|CD34", Group) ~ Group,
+    TRUE ~ "FLT3-ITD-")) %>% 
+  as.data.frame() %>% 
+  
+  mutate_at(vars(AML_Subtype), ~case_when(
+    .=="ETS-Fusion" | .=="RBM15-MKL1" ~ "AML, NOS",
+    TRUE ~ .)) %>% 
+  set_rownames(.$Sample)
+
+# table(diagnostic_samples$Group, diagnostic_samples$FLT3.ITD.positive.)
+
+
+# table(diagnostic_samples$AML_Subtype)
+table(diagnostic_samples$FLT3.Groups_PoorRisk)
+table(diagnostic_samples$FLT3.Groups_FavRisk)
+```
+
+```{r}
+# diagnostic_samples %>% 
+#   group_by(FLT3.Groups_PoorRisk, Batch_noSingletons) %>% 
+#   dplyr::count()
+
+
+# write.csv(select(diagnostic_samples, Sample,FLT3.ITD.positive., matches("FLT3.Groups")) %>%
+#             filter(FLT3.ITD.positive.=="Yes") %>%
+#             arrange(FLT3.Groups),
+#           "TARGET_AML_FLT3-ITD_Cooperating_Mutations_RNAseq_Samples_10.13.2021.csv", row.names = FALSE)
+```
+
+
+# Subset Counts
+
+```{r}
+in_counts <- cts_grch38[,diagnostic_samples$Sample]
+
+dim(in_counts) # 58263  1551
+head(in_counts[,1:5])
+```
+
+```{r}
+AML <- ! grepl("BM[0-9]|R[O0][0-9]", colnames(in_counts))
+keep <- rowSums(cpm(in_counts[,AML]) >= 1) >= 0.01*ncol(in_counts[,AML])
+cts.filtered <- in_counts[keep, ]
+
+dge <- DGEList(counts=cts.filtered)
+dge <- calcNormFactors(dge,method = "TMMwsp")
+
+logCPM <- edgeR::cpm(dge,log=TRUE,normalized.lib.sizes=TRUE, prior.count=1)
+CPM <- edgeR::cpm(dge,log=FALSE,normalized.lib.sizes=TRUE, prior.count=1)
+
+dim(logCPM) #30690  1551
+head(logCPM[,1:5])
+```
+
+
+# Unsupervised Clustering
+
+https://www.biostars.org/p/145083/
+
+```{r}
+FLT3.ITD_only <- diagnostic_samples %>% 
+  filter(FLT3.ITD.positive.=="Yes") %>% 
+  set_rownames(.$Sample)
+
+dim(FLT3.ITD_only)
+# head(FLT3.ITD_only)
+# table(FLT3.ITD_only$FLT3.Groups, FLT3.ITD_only$Batch)
+```
+
+```{r}
+table(FLT3.ITD_only$FLT3.Groups_PoorRisk,
+      FLT3.ITD_only$Batch)
+table(FLT3.ITD_only$AML_Subtype)
+```
+
+
+## Heatmaps
+
+### High Risk FLT3-ITD Only
+
+```{r}
+suppressPackageStartupMessages(library(DelayedArray))
+
+cts.filtered.ids <- cts_grch38_ids %>% 
+  filter(gene_name %in% rownames(cts.filtered)) 
+  
+identical(rownames(CPM), cts.filtered.ids$gene_name) #TRUE
+genes <- filter(cts.filtered.ids, grepl("ENSG", gene_id)) %>% 
+  pull(gene_name)
+
+# Mean vs Dispersion Feature Selection 
+sel_norm_counts <-  cts.filtered[genes, FLT3.ITD_only$Sample] 
+sel_norm_counts <- sel_norm_counts[rowSums(sel_norm_counts) > 0, ]
+
+obj <- seqGlue::calc_dispersion(as.matrix(sel_norm_counts), removeOutliers = TRUE) #removes outlier genes/transcripts based on cooks distance
+
+sg_TMMCPM_all <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=NULL))
+length(sg_TMMCPM_all)  #4362 (This isnt stable - I need to create a similar function...)
+
+sg_TMMCPM_top1000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=1000))
+
+sg_TMMCPM_top2000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=2000))
+```
+
+
+```{r}
+library(viridis)
+library(RColorBrewer)
+
+Cols <- c("FLT3.Groups_PoorRisk",
+          "AML_Subtype",
+          "Batch","Tissue")
+
+# all(Cols %in% colnames(FLT3.ITD_only)) #TRUE
+
+pal <- get_palette("npg", 6)
+
+cc_heatmap <- list()
+cc_heatmap[["Batch"]] <- viridis(n=length(unique(FLT3.ITD_only$Batch))) %>% 
+  set_names(unique(FLT3.ITD_only$Batch))
+
+cc_heatmap[["Tissue"]] <- viridis(n=length(unique(FLT3.ITD_only$Tissue))) %>% 
+  set_names(unique(FLT3.ITD_only$Tissue))
+
+cc_heatmap[["AML_Subtype"]] <- brewer.pal(length(unique(FLT3.ITD_only$AML_Subtype)),"Paired") %>% 
+  set_names(unique(FLT3.ITD_only$AML_Subtype))
+
+cc_heatmap[["FLT3.Groups_PoorRisk"]] <- c(
+  "All others/FLT3.ITD+"=pal[6],
+  "DEK-NUP214/FLT3.ITD+"=pal[3],
+  "FLT3.ITD+/WT1+"=pal[1],
+  "Low risk/FLT3-ITD+"=pal[5],
+  "NUP98-NSD1/FLT3.ITD+"=pal[2],
+  "NUP98-NSD1/FLT3.ITD+/WT1+"=pal[4]
+)
+
+par(mar=c(15,5,5,5))
+barplot(rep(1,length(cc_heatmap$FLT3.Groups_PoorRisk)),
+        col = cc_heatmap$FLT3.Groups_PoorRisk,
+        names.arg = names(cc_heatmap$FLT3.Groups_PoorRisk),
+        las=2)
+```
+
+```{r}
+gene_lists <- list(sg_TMMCPM_all, sg_TMMCPM_top2000, sg_TMMCPM_top1000)
+
+heatmaps <- lapply(gene_lists, function(x){
+  
+  p <- FLT3.ITD_only$FLT3.Groups_PoorRisk %>%
+  set_names(FLT3.ITD_only$Sample)
+
+  dends_res <- dge_dendrograms(expnData = logCPM,
+                  pheno = p,
+                  log=TRUE,
+                  method = "ward.D2",
+                  percent=0.01,
+                  add.count=1,
+                  createDGE = FALSE,
+                  filterTopGenes = FALSE,
+                  genelist = x)
+
+  print(table(x %in% rownames(dends_res$TMMCPM)))
+  
+  anno <- DeGSEA::create_HA_Labs_Hmap(expn=dends_res$TMMCPM,
+                                      geneList = x,
+                                      cc = cc_heatmap, #Need a test for all names being > length(0)
+                                      CDE = FLT3.ITD_only,
+                                      cols = names(cc_heatmap))
+
+  ComplexHmap(mat = dends_res$TMMCPM,
+              name = "Z-Scores",
+              scale=TRUE,
+              dge_dendrograms.res = dends_res,
+              hmap_anno_obj = anno$annoColumn)
+
+})
+
+# length(heatmaps)
+names(heatmaps) <- ls(pattern = "sg_TMMCPM")
+```
+
+```{r fig.height=10, fig.width=20}
+# lapply(names(heatmaps), function(x){
+#   pdf(paste0("Figures/TARGET_AML_FLT3-ITD_", x,"_TMMCPM_Heatmap_10.13.2021.pdf"), height = 10, width = 20)
+#   print(heatmaps[[x]])
+#   dev.off()
+# })
+```
+
+### Low Risk FLT3-ITD
+
+```{r}
+FLT3.ITD_LR <- diagnostic_samples %>% 
+  filter(!grepl("High risk", FLT3.Groups_FavRisk)) %>%
+  filter(grepl("CBFB-MYH11|RUNX1-RUNX1T1", AML_Subtype) | 
+           CEBPA.mutation.=="Yes" | NPM.mutation. == "Yes") %>% 
+  mutate_at(vars(FLT3.Groups_FavRisk), ~case_when(
+    grepl("CBFB-MYH11|RUNX1-RUNX1T1", AML_Subtype) & .=="FLT3-ITD-" ~ paste(AML_Subtype,., sep="/"),
+    CEBPA.mutation. == "Yes" & .=="FLT3-ITD-" ~ paste("CEBPA+",., sep="/"),
+    NPM.mutation.=="Yes" & .=="FLT3-ITD-" ~ paste("NPM1+", ., sep="/"), 
+    grepl("FLT3.ITD\\+\\/NPM\\+$", FLT3.Groups) ~ "NPM1+/FLT3-ITD+",
+    grepl("FLT3.ITD\\+\\/CEBPA\\+$", FLT3.Groups) ~ "CEBPA+/FLT3-ITD+",
+    TRUE ~ .)) %>%
+  set_rownames(.$Sample)
+
+
+dim(FLT3.ITD_LR)
+table(FLT3.ITD_LR$FLT3.Groups_FavRisk)
+# length(table(FLT3.ITD_LR$FLT3.Groups_FavRisk)) #7
+#table(FLT3.ITD_LR$CEBPA.mutation., FLT3.ITD_LR$NPM.mutation.) #0 positive for both
+```
+
+
+```{r}
+suppressPackageStartupMessages(library(DelayedArray))
+
+cts.filtered.ids <- cts_grch38_ids %>% 
+  filter(gene_name %in% rownames(cts.filtered)) 
+  
+identical(rownames(CPM), cts.filtered.ids$gene_name) #TRUE
+genes <- filter(cts.filtered.ids, grepl("ENSG", gene_id)) %>% 
+  pull(gene_name)
+
+# Mean vs Dispersion Feature Selection 
+LR_norm_counts <-  CPM[genes, FLT3.ITD_LR$Sample] 
+LR_norm_counts <- LR_norm_counts[rowSums(LR_norm_counts) > 0, ]
+
+obj <- seqGlue::calc_dispersion(as.matrix(LR_norm_counts), removeOutliers = TRUE) #removes outlier genes/transcripts based on cooks distance
+
+sg_TMMCPM_LR_all <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=NULL))
+length(sg_TMMCPM_LR_all)  # 3498
+
+sg_TMMCPM_LR_top1000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=1000))
+
+sg_TMMCPM_LR_top2000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=2000))
+```
+
+```{r}
+lr_pal <- get_palette("Paired", 8)
+# barplot(rep(1,8), col=lr_pal)
+
+cc_heatmap[["FLT3.Groups_FavRisk"]] <- c(
+  "CBFB-MYH11/FLT3.ITD+" = "firebrick1",
+  "CBFB-MYH11/FLT3-ITD-" = "firebrick4",
+  
+  "CEBPA+/FLT3-ITD-" = lr_pal[2],
+  "CEBPA+/FLT3-ITD+" = lr_pal[1], 
+  
+  "NPM1+/FLT3-ITD-" = lr_pal[4], 
+  "NPM1+/FLT3-ITD+" = lr_pal[3],
+  
+  "RUNX1-RUNX1T1/FLT3-ITD-" = "burlywood4", 
+  "RUNX1-RUNX1T1/FLT3.ITD+" = "burlywood2"
+)
+
+
+par(mar=c(15,5,5,5))
+barplot(rep(1,length(cc_heatmap$FLT3.Groups_FavRisk)),
+        col = cc_heatmap$FLT3.Groups_FavRisk,
+        names.arg = names(cc_heatmap$FLT3.Groups_FavRisk),
+        las=2)
+
+# par(mar=c(15,5,5,5))
+# barplot(rep(1,length(cc_heatmap$AML_Subtype)),
+#         col = cc_heatmap$AML_Subtype,
+#         names.arg = names(cc_heatmap$AML_Subtype),
+#         las=2)
+```
+
+
+```{r}
+gene_lists <- list(sg_TMMCPM_LR_all, sg_TMMCPM_LR_top2000, sg_TMMCPM_LR_top1000)
+
+heatmaps_LR <- lapply(gene_lists, function(x){
+  
+  #define the phenotypes of each sample
+  p <- FLT3.ITD_LR$FLT3.Groups_FavRisk %>%
+  set_names(FLT3.ITD_LR$Sample)
+  
+  dends_res <- dge_dendrograms(expnData = logCPM,
+                  pheno = p,
+                  log=TRUE,
+                  method = "ward.D2",
+                  percent=0.01,
+                  add.count=1,
+                  createDGE = FALSE,
+                  filterTopGenes = FALSE,
+                  genelist = x)
+
+  print(table(x %in% rownames(dends_res$TMMCPM)))
+
+  #update the color codes
+  codes <- cc_heatmap[-grep("FLT3.Groups_PoorRisk", names(cc_heatmap))]
+  codes <- sapply(names(codes), function(x){
+        idx <- names(codes[[x]]) %in% unique(FLT3.ITD_LR[[x]])
+        codes[[x]][idx]
+  })
+
+  anno <- DeGSEA::create_HA_Labs_Hmap(expn=dends_res$TMMCPM,
+                                      geneList = x,
+                                      cc = codes, #Need a test for all names being > length(0)
+                                      CDE = FLT3.ITD_LR,
+                                      cols = names(codes))
+  
+  ComplexHmap(mat = dends_res$TMMCPM,
+              name = "Z-Scores",
+              scale=TRUE,
+              dge_dendrograms.res = dends_res,
+              hmap_anno_obj = anno$annoColumn)
+
+})
+
+
+names(heatmaps_LR) <- ls(pattern = "sg_TMMCPM_LR")
+```
+
+```{r}
+lapply(names(heatmaps_LR), function(x){
+  pdf(paste0("Figures/TARGET_AML_FLT3-ITD_", x,"_Heatmap_10.18.2021.pdf"), height = 10, width = 20)
+  print(heatmaps_LR[[x]])
+  dev.off()})
+```
+
+
+### All AML
+
+```{r}
+dim(diagnostic_samples)
+```
+
+```{r}
+suppressPackageStartupMessages(library(DelayedArray))
+
+
+cts.filtered.ids <- cts_grch38_ids %>% 
+  filter(gene_name %in% rownames(cts.filtered)) 
+  
+identical(rownames(CPM), cts.filtered.ids$gene_name) #TRUE
+genes <- filter(cts.filtered.ids, grepl("ENSG", gene_id)) %>% 
+  pull(gene_name)
+
+# Mean vs Dispersion Feature Selection 
+sel_norm_counts <-  CPM[genes,diagnostic_samples$Sample] 
+
+obj <- seqGlue::calc_dispersion(as.matrix(sel_norm_counts), removeOutliers = TRUE) #removes outlier genes/transcripts based on cooks distance
+
+sg_TMMCPM_dx_all <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=NULL))
+length(sg_TMMCPM_dx_all)  #4039
+
+sg_TMMCPM_dx_top1000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=1000))
+
+sg_TMMCPM_dx_top2000 <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=2000))
+```
+
+NaNs producedstep size truncated due to divergence 
+```{r}
+Cols <- c("FLT3.Groups_PoorRisk",
+          "AML_Subtype",
+          "Batch","Tissue")
+
+# all(Cols %in% colnames(FLT3.ITD_only)) #TRUE
+
+pal <- get_palette("npg", 6)
+
+cc_heatmap2 <- list()
+cc_heatmap2[["Batch"]] <- viridis(n=length(unique(diagnostic_samples$Batch))) %>% 
+  set_names(unique(diagnostic_samples$Batch))
+
+cc_heatmap2[["Tissue"]] <- viridis(n=length(unique(unique(diagnostic_samples$Tissue)))) %>% 
+  set_names(unique(diagnostic_samples$Tissue))
+
+cc_heatmap2[["AML_Subtype"]] <- brewer.pal(length(unique(diagnostic_samples$AML_Subtype)),"Paired") %>% 
+  set_names(unique(diagnostic_samples$AML_Subtype))
+cc_heatmap2[["AML_Subtype"]]["AML, NOS"] <-  "grey80"
+cc_heatmap2[["AML_Subtype"]]["No.Primary.Fusion"] <- "azure1" 
+cc_heatmap2[["AML_Subtype"]]["NUP98-KDM5A"] <- "burlywood1"
+cc_heatmap2[["AML_Subtype"]]["RUNX1-RUNX1T1"] <- "burlywood4"
+
+
+cc_heatmap2[["FLT3.Groups_PoorRisk"]] <- c(
+  "All others/FLT3.ITD+"=pal[6],
+  "DEK-NUP214/FLT3.ITD+"=pal[3],
+  "FLT3.ITD+/WT1+"=pal[1],
+  "Low risk/FLT3-ITD+"=pal[5],
+  "NUP98-NSD1/FLT3.ITD+"=pal[2],
+  "NUP98-NSD1/FLT3.ITD+/WT1+"=pal[4],
+  "FLT3-ITD-"="azure2",
+  "NBM"="black",
+  "CD34_PB"="grey50"
+)
+
+par(mar=c(15,5,5,5))
+barplot(rep(1,length(cc_heatmap2$FLT3.Groups_PoorRisk)),
+        col = cc_heatmap2$FLT3.Groups_PoorRisk,
+        names.arg = names(cc_heatmap2$FLT3.Groups_PoorRisk),
+        las=2)
+```
+
+
+```{r}
+gene_lists <- list(sg_TMMCPM_dx_all, sg_TMMCPM_dx_top1000, sg_TMMCPM_dx_top2000)
+
+heatmaps_dx <- lapply(gene_lists, function(x){
+  
+  p <- diagnostic_samples$FLT3.Groups_PoorRisk %>%
+  set_names(diagnostic_samples$Sample)
+
+
+  dends_res <- dge_dendrograms(expnData = logCPM,
+                  pheno = p,
+                  log=TRUE,
+                  method = "ward.D2",
+                  percent=0.01,
+                  add.count=1,
+                  createDGE = FALSE,
+                  filterTopGenes = FALSE,
+                  genelist = x)
+
+
+  # in_vst <- SummarizedExperiment::assay(vst)[x,]
+  # 
+  # d1 <- dist(t(in_vst), method = "euclidean", diag = FALSE,
+  #            upper = FALSE) #sample distances WITHOUT SCALING
+  # d2 <- dist(in_vst, method = "euclidean", diag = FALSE,
+  #            upper = TRUE) #gene distances WITHOUT SCaling
+  # 
+  # samp.c1 <- hclust(d1, method = "ward.D2", members = NULL) #sample clustering
+  # gene.c2 <- hclust(d2, method = "ward.D2", members = NULL) #gene clustering
+  # 
+  # dends_res <- list(in_vst,samp.c1,gene.c2)
+  # names(dends_res) <- c("TMMCPM","samp.c1", "gene.c2")
+
+  #NEED TO FIX: 1) make USI or sample_ID column into a variable
+  # Provide an erorr or warning when the subset dataframe has zero rows.
+  
+  print(table(x %in% rownames(dends_res$TMMCPM)))
+  
+  anno <- DeGSEA::create_HA_Labs_Hmap(expn=dends_res$TMMCPM,
+                                      geneList = x,
+                                      cc = cc_heatmap2,
+                                      CDE = diagnostic_samples,
+                                      cols = names(cc_heatmap2))
+
+
+  ComplexHmap(mat = dends_res$TMMCPM, 
+              name = "Z-Scores",
+              scale=TRUE,
+              dge_dendrograms.res = dends_res,
+              hmap_anno_obj = anno$annoColumn)
+
+  
+  
+})
+
+# length(heatmaps)
+names(heatmaps_dx) <- ls(pattern = "sg_TMMCPM_dx")
+```
+
+```{r fig.height=10, fig.width=20}
+# lapply(names(heatmaps_dx), function(x){
+#   pdf(paste0("Figures/TARGET_AML_FLT3-ITD_", x,"_Heatmap_10.13.2021.pdf"), height = 10, width = 20)
+#   print(heatmaps_dx[[x]])
+#   dev.off()})
+```
+
+
+## UMAP
+
+```{r}
+adjusted_subset <- ComBat_seq(counts = as.matrix(cts.filtered[sg_all, FLT3.ITD_only$Sample]),
+                       batch=FLT3.ITD_only$Batch_noSingletons,
+                       group=FLT3.ITD_only$FLT3.Groups_PoorRisk,
+                       full_mod = TRUE)
+
+# adjusted_test
+range(adjusted_test)
+head(adjusted_test[,1:5])
+```
+
+```{r}
+adjusted <- ComBat_seq(counts = as.matrix(cts.filtered[,diagnostic_samples$Sample]),
+                       batch=diagnostic_samples$Batch_noSingletons,
+                       group=diagnostic_samples$FLT3.Groups_PoorRisk,
+                       full_mod = TRUE)
+
+dim(adjusted)
+# saveRDS(adjusted,"TARGET_AML_FLT3.ITD_co-occuring_muts_ComBatseq.RDS")
+```
+
+```{r}
+cts.filtered.ids <- cts_grch38_ids %>% 
+  filter(gene_name %in% rownames(cts.filtered)) %>% 
+  filter(grepl("ENSG", gene_id))
+
+# Im wondering if I want to do VST on only FLT3-ITD or the whole dataset to capture variablility of FLT3-ITD in the presence of other AML subtypes?
+# or do I want to really look at intra-FLT3-ITD variablility?
+dds <- DESeq2::DESeqDataSetFromMatrix(round(cts.filtered[cts.filtered.ids$gene_name, ], digits = 0),
+                                      colData = diagnostic_samples,
+                                      design = ~ 1)
+
+# normFactors <- normFactors / exp(rowMeans(log(normFactors)))
+# normalizationFactors(dds) <- normFactors
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds_cts <- counts(dds, normalized=TRUE)
+
+# plotDispEsts(dds)
+vst <- DESeq2::vst(dds, blind = TRUE)
+dim(vst)
+```
+
+with the vst as input:
+the condition has length > 1 and only the first element will be usedRemoving 8 outliers
+no observations informative at iteration 1glm.fit: algorithm did not convergeError in glm.fit(x = numeric(0), y = numeric(0), weights = NULL, start = c(1e-06,  : object 'fit' not found
+
+
+with cpm as input:
+the condition has length > 1 and only the first element will be usedRemoving 211 outliers
+NaNs producedstep size truncated due to divergenceNaNs produced  
+
+```{r}
+library(DelayedArray)
+
+#for gene selection, only use genes (not repetitive elements), and only select those from the populations of interest FLT3-ITD
+# sel_cts <- cts.filtered[cts.filtered.ids$gene_name, FLT3.ITD_only$Sample]
+# sel_cts <- SummarizedExperiment::assay(vst)
+sel_cts <- dds_cts[,FLT3.ITD_only$Sample]
+obj <- seqGlue::calc_dispersion(as.matrix(sel_cts), removeOutliers = TRUE) #removes outlier genes/transcripts based on cooks distance
+sg_all <- seqGlue::get_selected_genes(seqGlue::select_genes(obj, top_n=NULL))
+length(sg_all) #4230
+
+
+
+in_vst <- SummarizedExperiment::assay(vst)[sg_all,FLT3.ITD_only$Sample]
+
+dim(in_vst)
+head(in_vst[,1:5]) #
+```
+
+
+```{r fig.height=4}
+Cols <- c("FLT3.Groups_PoorRisk",  "FLT3.Groups_FavRisk","trisomy.8","Tissue","Batch")
+
+cc <- colorCodes_aheatmap(FLT3.ITD_only[,Cols])
+cc <- lapply(cc, function(x){ x[grep("All others", names(x))] <- "grey60"; return(x)})
+
+# cc
+par(mar=c(15,3,3,3))
+col_check <- cc$FLT3.Groups_FavRisk
+# barplot(rep(1,length(col_check)), col=col_check, names.arg = names(col_check), las=2)
+```
+
+Need to cite: devtools::install_github('cole-trapnell-lab/leidenbase') 
+
+
+n_neighbors	
+The size of local neighborhood (in terms of number of neighboring sample points) used for manifold approximation. Larger values result in more global views of the manifold, while smaller values result in more local data being preserved.
+
+min_dist	
+The effective minimum distance between embedded points. Smaller values will result in a more clustered/clumped embedding where nearby points on the manifold are drawn closer together, while larger values will result on a more even dispersal of points. 
+
+```{r}
+umap_bulk <- UMAP_workflow(TFIDF_Matrix = in_vst, 
+                           scale_data=FALSE,
+                           input_features = sg_all,
+                            samples_vector = FLT3.ITD_only$Sample,
+                            sample_info_df = FLT3.ITD_only,
+                            Columns_for_Plots = Cols,
+                            cc = cc, 
+                            addl_color_vector=rainbow(n=40),
+                            min_dist = 0.01,
+                            n_neighbors=15,
+                            k2=10,
+                            res2=0.025)
+```
+
+```{r fig.height=10, fig.width=7}
+umap_bulk$umap_2D_scatter
+```
+
+
+# Heatmap with FLT3-ITD DEGs
+
+```{r}
+diagnostic_samples.aml <- diagnostic_samples %>% 
+  filter(!is.na(FLT3.ITD.positive.)) %>% 
+  set_rownames(.$Sample)
+
+# table(diagnostic_samples.aml$FLT3.ITD.positive.)
+# table(diagnostic_samples.aml$Group)
+# head(diagnostic_samples.aml$USI)
+
+
+ITD.DE <- twoGroups_DEGs(expnData = cts_grch38,
+                         clinData = diagnostic_samples.aml,
+                         col = "FLT3.ITD.positive.", ref = "No",
+                         percent.cutoff = 0.01,
+                         anno = FALSE,
+                         SkipPlots = TRUE)
+```
+
+
+```{r}
+degs <- extract_DEGs(ITD.DE,anno = FALSE, geneLevel = FALSE)
+
+dim(degs) # 1337    8
+# head(degs)
+# tail(degs)
+# names(ITD.DE)
+# saveRDS(ITD.DE,"TARGET_AML_FLT3-ITD+_vs_FLT3-ITD-_DE_results.RDS")
+```
+
+```{r}
+ p <- diagnostic_samples.aml$FLT3.Groups_PoorRisk %>%
+  set_names(diagnostic_samples.aml$Sample)
+
+
+  dends_res_de <- dge_dendrograms(expnData = ITD.DE$DE$Voom$E,
+                  pheno = p,
+                  log=TRUE,
+                  method = "ward.D2",
+                  percent=0.01,
+                  add.count=1,
+                  createDGE = FALSE,
+                  filterTopGenes = FALSE,
+                  genelist = degs$gene)
+  
+  all(degs$gene %in% rownames(dends_res_de$TMMCPM))
+  anno_deg <- DeGSEA::create_HA_Labs_Hmap(expn=dends_res_de$TMMCPM,
+                                      geneList = degs$gene,
+                                      cc = cc_heatmap2,
+                                      CDE = diagnostic_samples.aml,
+                                      cols = names(cc_heatmap2))
+
+
+heatmap_degs <- ComplexHmap(mat = dends_res_de$TMMCPM, 
+              name = "Z-Scores",
+              scale=TRUE,
+              dge_dendrograms.res = dends_res_de,
+              hmap_anno_obj = anno_deg$annoColumn)
+```
+
+```{r}
+# pdf("Figures/TARGET_AML_FLT3-ITD+_vs_FLT3-ITD-_from_DEGs.pdf", height = 10, width = 20)
+heatmap_degs
+# dev.off()
+```
+
+
+# Pathway Analysis 
+
+Pathway Commons Search Pathways
+Parameters:
+q= [Required] a keyword, name, external identifier, or a Lucene query string.
+
+page=N [Optional] (N>=0, default is 0). Search results are paginated to avoid overloading the search response. This sets the search result page number.
+
+datasource= [Optional] filjsonter by data source (use names or URIs of pathway data sources or of any existing Provenance object). If multiple data source values are specified, a union of hits from specified sources is returned. For example, datasource=reactome&datasource=pid returns hits associated with Reactome or PID.
+
+organism= [Optional] organism filter. The organism can be specified either by official name, e.g. "homo sapiens" or by NCBI taxonomy identifier, e.g. "9606". Similar to data sources, if multiple organisms are declared, a union of all hits from specified organisms is returned. For example 'organism=9606&organism=10016' returns results for both human and mouse. Note the officially supported species.
+
+type= [Optional] BioPAX class filter (values). NOTE: queries using &type=biosource (or any BioPAX UtilityClass, such as Score, Evidence) filter won't not return any hits; use Entity (e.g., Pathway, Control, Protein) or EntityReference type (e.g., ProteinReference) instead.
+
+Example Query: 
+https://www.pathwaycommons.org/pc2/search?q=FGFR2&type=pathway
+e.g. '/search.json'
+
+
+```{r}
+library(jsonlite)
+```
+
+```{r}
+create_query_str <- function(search_term){
+  url <- "https://www.pathwaycommons.org/pc2/"
+  query_str <- paste0(url, paste0("search.json?q=", search_term, "&organism=9606&type=pathway"))
+  
+  res <- fromJSON(txt=query_str) 
+  res[[3]] <- res[[3]] %>%
+    mutate(search_term=search_term) %>% 
+    select(1:2, search_term, everything())
+  
+  return(res)
+}
+```
+
+FLT3-ITD Pathways 
+
+The FLT3 cytoplasmic domain physically associates with the p85 subunit of phosphoinositol-3-kinase (PI3K), Ras GTPase [RAS], phospholipase C-γ [PLCG], Shc, growth factor receptor-bound protein (Grb2) and Src family tyrosine kinase, and results in the phosphorylation of these proteins [38]. These actions affect the activation of further downstream PI3K/protein kinase B (Akt) and mitogen-activated protein kinase (MAPK) pathways 
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3076284/
+
+https://www.nature.com/articles/s41598-019-48687-z
+
+https://www.science.org/doi/full/10.1126/scitranslmed.aaa5731
+
+https://molecular-cancer.biomedcentral.com/articles/10.1186/1476-4598-9-292
+
+https://ashpublications.org/blood/article/119/17/4026/29842/SRC-is-a-signaling-mediator-in-FLT3-ITD-but-not-in
+
+
+https://ashpublications.org/blood/article/105/9/3699/21284/Flt3-tandem-duplication-mutations-cooperate-with
+
+
+TO ADD: HH and mTOR and WNT
+
+
+
+```{r}
+searches <- c("RAS","PLCG", "SHC", "GRB2", "SRC", "AKT", "MAPK","STAT5", "RAC1","LIG3","FOXO3", "CEBPA", "CXCR4", "PIM1")
+```
+
+```{r}
+pathways <- purrr::map(searches, create_query_str)
+pathways <- purrr::map_dfr(pathways, `[[`, 3) %>% 
+  distinct()
+
+head(pathways)
+# dim(pathways) #521   9
+# write.csv(select(pathways, uri:name),"TARGET_AML_FLT3-ITD_literature_textmining_associated_pathways.csv", row.names = FALSE)
+```
+
+
+Pathway Commons GET
+Parameters:
+uri= [Required] valid/existing BioPAX element's absolute URI (for utility classes that were "normalized", such as entity references and controlled vocabularies, it is usually an Identifiers.org URL. Multiple identifiers are allowed per query, for example, 'uri=http://identifiers.org/uniprot/Q06609&uri=http://identifiers.org/uniprot/Q549Z0' See also note about URIs and IDs.
+format= [Optional] output format (values)
+pattern= [Optional] array of built-in BioPAX patterns to apply (SIF types - inference rule names; see output format description) when format=SIF or TXT is used; by default, all the pre-defined patterns but neighbor-of apply.
+subpw= [Optional] 'true' or 'false' (default) - whether to include or skip sub-pathways when we auto-complete and clone the requested BioPAX element(s) into a reasonable sub-model
+
+Example: 
+https://www.pathwaycommons.org/pc2/get?uri=http://identifiers.org/reactome/R-HSA-201451
+https://www.pathwaycommons.org/pc2/get?uri=FGFR2&format=gsea
+
+```{r}
+get_pathways_gmt <- function(pathway_url){
+  url <- "https://www.pathwaycommons.org/pc2/"
+  request <- paste0("get?uri=",pathway_url,"&format=gsea&subpw=false")
+  request <- paste0(url,request)
+
+  paths_gmt <- RCurl::getURL(request)
+  
+  # edit so that the name is the first entry. so when read.gmt() is used the name, and not he URL is used as the pathway identifier.
+  name <- gsub("^http.+\\\t(name:\\s.+)\\s\\[.+","\\1",paths_gmt)
+  paths_gmt <- paste(name, paths_gmt, sep="\t")
+  paths_gmt <- gsub("\\\tname:", "; name:", paths_gmt)
+}
+```
+
+```{r}
+tictoc::tic()
+pathway_reqs <- purrr::map(pathways$uri, get_pathways_gmt)
+tictoc::toc() #
+
+length(pathway_reqs) #521
+pathway_reqs <- unlist(pathway_reqs)
+idx <- grep("^\\\t", pathway_reqs)
+pathway_reqs <- pathway_reqs[-idx]
+length(pathway_reqs) #454
+
+#save the file to a gmt
+# cat(unlist(pathway_reqs),
+#     file = paste0("Pathway_Commons_v12_pathways_",Sys.Date(),".gmt"),
+#     append = FALSE, sep="")
+```
+
+```{r}
+FLT3_pathways_gmt <- read.gmt("Pathway_Commons_v12_pathways_2021-10-13.gmt")
+
+length(FLT3_pathways_gmt)
+# head(FLT3_pathways_gmt)
+```
+
+
+
+## GSVA 
+
+```{r}
+library(rhdf5)
+# BiocManager::install("GSVA")
+library(GSVA)
+```
+
+```{r}
+# logCPM
+gsva.res.all <- gsva(expr = logCPM,
+                 gset.idx.list = FLT3_pathways_gmt,
+                 # annotation=,
+                 method="ssgsea",
+                 kcdf="Gaussian",
+                 parallel.sz=2, 
+                 mx.diff=TRUE,
+                 abs.ranking=FALSE, 
+                 tau=1,
+                 min.sz=5,
+                 max.sz=400,
+                 verbose=TRUE)
+
+
+head(gsva.res.all[,1:5])
+# dim(gsva.res.all) #423 1551
+# write.csv(gsva.res.all, "GSEA/TARGET_AML_FLT3-ITD_ssGSEA_FLT3_associated_pathways.csv")
+```
+
+```{r}
+pathways <- read.csv("TARGET_AML_FLT3-ITD_literature_textmining_associated_pathways.csv")
+gsva.res.all <- read.csv("GSEA/TARGET_AML_FLT3-ITD_ssGSEA_FLT3_associated_pathways.csv")
+# 
+# 
+dim(gsva.res.all) 
+# head(gsva.res.all[,1:5])
+```
+
+```{r}
+poor_vs_others <- FLT3.ITD_only %>% 
+  filter(grepl("High risk|All others", FLT3.Groups_FavRisk)) %>% 
+  mutate(FLT3.Groups_FavRisk=as.factor(FLT3.Groups_FavRisk)) %>% 
+  set_rownames(.$Sample)
+
+DE_poor_vs_others <- gsva_DE(gsva_matrix = gsva.res.all[,poor_vs_others$Sample],
+                              clinData=poor_vs_others,
+                              col="FLT3.Groups_FavRisk",
+                              p.value = 1)
+```
+
+```{r}
+# DE_poor_vs_others$contrast
+# table(DE_poor_vs_others$fit$design[,"Ref"])
+# table(DE_poor_vs_others$fit$design[,"Comparitor"])
+
+DE_poor_vs_others_res <- read.csv("GSEA/TARGET_AML_HighRisk_FLT3-ITD_vs_allOthers_FLT3-ITD_ssGSEA_pathways.csv")
+
+# DE_poor_vs_others_res <- DE_poor_vs_others$gene_sets %>% 
+#   filter(adj.P.Val < 0.05)
+
+dim(DE_poor_vs_others_res)
+# View(DE_poor_vs_others_res)
+# write.csv(DE_poor_vs_others_res, "GSEA/TARGET_AML_HighRisk_FLT3-ITD_vs_allOthers_FLT3-ITD_ssGSEA_pathways.csv", row.names = FALSE)
+```
+
+```{r}
+top_paths <- DE_poor_vs_others_res %>% 
+  filter(adj.P.Val < 0.01) %>% 
+  mutate(Dir=ifelse(logFC > 0 , "up","zdown")) %>% 
+  mutate(name=gsub("name: ", "", ID)) %>% 
+  left_join(., select(pathways,uri:name),
+            by="name") %>% 
+  select(GeneSet:ID, search_term, everything())
+
+
+top_paths_up <- head(top_paths)
+top_paths_dn <- tail(top_paths)
+
+# FLT3_pathways_gmt[top_paths_up$ID]
+```
+
+```{r}
+top_paths_up
+top_paths_dn
+```
+
+
+
+### Favorable
+
+```{r}
+fav_vs_others <- FLT3.ITD_only %>% 
+  filter(grepl("Low risk|All others", FLT3.Groups_PoorRisk)) %>% 
+  mutate(FLT3.Groups_PoorRisk=as.factor(FLT3.Groups_PoorRisk)) %>% 
+  set_rownames(.$Sample)
+
+table(fav_vs_others$FLT3.Groups_PoorRisk)
+# levels(fav_vs_others$FLT3.Groups_PoorRisk)
+
+DE_fav_vs_others <- gsva_DE(gsva_matrix = gsva.res.all[,fav_vs_others$Sample],
+                  clinData=fav_vs_others,
+                  col="FLT3.Groups_PoorRisk",
+                  p.value = 1)
+```
+
+```{r}
+DE_fav_vs_others_res <- read.csv("TARGET_AML_LowRisk_FLT3-ITD_vs_allOthers_FLT3-ITD_ssGSEA_pathways.csv") %>% 
+  mutate(name=gsub("name: ", "", ID)) %>% 
+  left_join(., select(pathways,uri:name),
+            by="name") %>% 
+  select(GeneSet:ID, search_term, everything())
+
+# DE_fav_vs_others_res <- DE_fav_vs_others$gene_sets %>% 
+#   filter(adj.P.Val < 0.05) s
+
+# write.csv(DE_fav_vs_others_res, "TARGET_AML_LowRisk_FLT3-ITD_vs_allOthers_FLT3-ITD_ssGSEA_pathways.csv", row.names = FALSE)
+```
+
+```{r}
+DE_fav_vs_others_res
+```
+
+
+# Session Information
+
+```{r}
+sessionInfo()
+```
+

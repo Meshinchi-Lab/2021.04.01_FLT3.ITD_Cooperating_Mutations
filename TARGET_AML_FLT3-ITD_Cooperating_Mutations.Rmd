@@ -1,0 +1,2995 @@
+---
+title: "FLT3-ITD Cooperating Mutations Cohorts Selection"
+author: "Jenny Smith"
+date: "4/1/21"
+output: html_document
+---
+
+# Set-up 
+
+```{r setup, cache = FALSE, include = FALSE}
+require(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2021.04.01_FLT3.ITD_Cooperating_Mutations"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),
+                      tidy=TRUE,
+                      fig.align='center',
+                      fig.width = 10, fig.height = 10)
+node=Sys.info()[["nodename"]]
+if(!grepl("local", node)){
+  print(node)
+  options(bitmapType = 'cairo')
+  grDevices::X11.options(type='cairo')
+}
+
+options(stringsAsFactors = FALSE)
+table = function (..., useNA = 'ifany') base::table(..., useNA = useNA)
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+
+library(ggplot2)
+library(gridExtra)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+
+library(DeGSEA)
+
+getwd()
+```
+
+
+# Define Functions
+
+```{r}
+classify_ISCN_fusions <- function(ISCN, retdata=FALSE){
+
+  #Create a stable reference table. This can be added onto as time goes on. 
+  ref <- data.frame(matrix("",ncol = 2, nrow = 0,
+                           dimnames = list(NULL,c("Fusion","Cyto.Regex")))) %>% 
+    add_row(Fusion=c(#Cryptics/M7/FLT3-ITD associated.
+                     "NUP98-NSD1",
+                     "NUP98-KDM5A",
+                     "DEK-NUP214",
+                     "CBFA2T3-GLIS2",
+                     
+                     #KMT2A 
+                     "KMT2A-MLLT3", 
+                     "KMT2A-MLLT10",
+                     "KMT2A-MLLT4",
+                     "KMT2A-ELL",
+                     "KMT2A-MLLT1", 
+                     "KMT2A-X",
+                     
+                     #CBF
+                     "RUNX1-RUNX1T1", 
+                     "CBFB-MYH11"),
+            Cyto.Regex=c( #Cryptics/M7/FLT3-ITD associated.
+                         "t\\(\\d{0,2};?5;11;?\\d{0,2}\\)\\([pq]?.{0,};?p35;p15.{0,}\\)", 
+                         "t\\(\\d{0,2};?11;12;?\\d{0,2}\\)\\([pq]?.{0,};?p15;p13.{0,}\\)", 
+                         "t\\(\\d{0,2};?6;9;?\\d{0,2}\\)\\([pq]?.{0,};?p2[23];q34.{0,}\\)",
+                         "inv\\(16\\)\\(p13;?q24\\)", 
+                         
+                         #KMT2A
+                         "t\\(\\d{0,2};?9;11;?\\d{0,2}\\)\\s?\\([pq]?.{0,};?p2\\d;q23.{0,}\\)", 
+                         "(t|dic|ins)\\(\\d{0,2};?10;11;?\\d{0,2}\\)\\([pq]?.{0,};?p1[23].{0,2};q23.{0,}\\)",  #46,XY,ins(10;11)(p12;q23q13)[18]/46,XY[2]
+                         "t\\(\\d{0,2};?6;11;?\\d{0,2}\\)\\([pq]?.{0,};?q2\\d;q23.{0,}\\)", 
+                         "t\\(\\d{0,2};?11;19;?\\d{0,2}\\)\\([pq]?.{0,};?q23;?p13.1.{0,}\\)", 
+                         "t\\(\\d{0,2};?11;19;?\\d{0,2}\\)\\([pq]?.{0,};?q23;?p13.[23].{0,}\\)", 
+                         "(t|ins)\\(\\d{0,2};11\\)\\([pq]?.{0,4};q23|(t|ins)\\(11;\\d{0,2}\\)\\(q23;[pq]?.{0,4}\\)",
+                         
+                         #CBF
+                         "t\\(\\d{0,2};?8;21;?\\d{0,2}\\)\\(q22;?q22\\)|ins\\(21;8\\)|ins\\(8;21\\)", 
+                         "inv\\(16\\)\\(p13.{0,3}q22\\)|t\\(16;16\\)\\(p13.{0,3}q22|ins\\(16;16\\)\\(p13.1;?q22")) %>% 
+    set_rownames(.$Fusion)
+  
+  if(retdata){
+    return(ref)
+  }
+  
+  res <- sapply(ref[["Fusion"]], function(fusion){
+    ifelse(grepl(ref[fusion, "Cyto.Regex"], ISCN), fusion, "")
+  })
+  
+  res <- res[res!=""]
+  # print(res)
+  
+  if(length(res)==0){
+    res=""
+  }else if (length(res) > 1){
+    res <- ifelse(any(grepl("KMT2A-[ME]", res)) & any(grepl("KMT2A-X", res)), 
+                  res[res!="KMT2A-X"], paste0(., collapse = "; "))
+  }
+  
+   # print(res)
+  return(res)
+}
+```
+
+
+
+# Questions
+
+Data types in common to all studies:
+1. ISCN
+4. Molecular Assays/RNAseq Results for NPM1, WT1, CEBPA, NUP98-NSD1
+
+
+
+Questions:
+
+1. FLT3_Mutation - separate into FLT3.PM and FLT3.TKD and FLT3-ITD (is this in the scope of the manuscript?)
+2. WT1_Mutation - include indels only? or also point/frameshift mutations? (Answer: include all)
+3. KIT mutations - need to map to exon8 or exon17 deletions *checked RNAindel for exon #*
+4. CEBPA mutations - only bZip  domain indels from RNAseq *done*
+
+5. Should we make categories? like: (Answer: No, let Todd/Rob do the categories)
+* FLT3-ITD alone
+* FLT3/WT1
+* FLT3/RUNX1-RUNX1T1 and 1 or more additional mutations/CNVs
+* 2 or more "favorable" mutations/fusions/CNVs
+* 2 or more "unfavorable" mutations/fusions/CNVs
+
+Take Home Message from Soheil/Rhonda to the questions:
+- use wide net and simplistic Yes/No categorization on WT1 and RNAindel mutations. *No identify hotspots and ensure variants fall into these*
+- don't worry about merging specific mutation definitions (eg cKITe17 and cKITe8 mutations okay to merge) 
+
+1. We should test the 6 called ITD by Cicero.
+  -Coordinate with Rhonda and Tiffany *done*
+2. Can you confirm that we used all ITDs regardless of AR?
+  -Will double check this - OK I did make all <0.1 to FLT3-ITD positive *done* 
+3. Can you confirm that you combined all WT1 mutation data sources?
+  -Will create a “WT1_Detection_Method” column to define how each pt was classified (RNAseq, WGS, PCR assay)
+  -Coordinate with Rhonda *done*
+4. Merge in UBTF mutations and see if any co-occur with NUP98-NSD1 *done*
+5. Merge in outcome/clinical covariates *done*
+ 
+
+Notes on WT1 Detection Methods:
+- all the 2961 patients that are now Yes for WT1 come from an exon 7,8,9 screen.  *done*
+- WT1 mutation was never included in the CDEs until recently *started by rhonda*
+-incorporated WGS, TCS and transcriptome calls *done by rhonda*
+- Phoenix did in the lab for 2961/03P1 for WT1 
+-There is 1 0531 patient that was Unknown and should be No, since an exon 7 screen was done previously *ASK*
+- AAML0531 without WGS, TCS, etc - it was a exon 7 only screen (by genemapper and sequencing)  *done*
+
+RNAindel:
+- was designed for the indels mostly
+- how accurate is it in SNVs?
+- check out the confidence score on the RNAIndel original data for SNVs
+
+From Katherine/Soheil:
+
+WT1 mutations, is it possible to list what exon they are in? I just want to be able to see which are the ones that were added with WGS and are outside the canonical exon 1,7, and 9.  If a large number and the patter not what showed prior then may be good to take quick look at outcome for these ITD/WT1 mutations and see if still associated with poor prognosis.
+
+do not include SNV only  bZip ones and CEBPA mutations.  I would call the N-term as not CEBPA mutated. Given their co-occurrence pattern is not typical of CEBPA and what Phoenix and Soheil showed about some CEBPA non-pathogenic polymorphisms in N-term I suspect this is what these are.
+- Take Home: CEBPA bZip indels are clinically relevant. N-term only are not. 
+
+https://stackoverflow.com/questions/38220963/how-to-pass-a-variable-name-in-group-by
+
+df %>%
+   arrange(val) %>% 
+   group_by(across(all_of(crit1))) %>% 
+   mutate(RANK = row_number())
+
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_03.17.21.csv"),
+                   na.strings = c("NA","#N/A","#NA", "N/A", "^$", "^\\.$",""))
+
+inelig <- merged %>%  
+  filter(Eligibility_Comments == "remove") %>% 
+  pull(Reg.)
+
+  
+merged <- merged %>% 
+  #For this analysis include <0.1 AR are FLT3-ITD positive 
+  mutate_at(vars(FLT3.ITD.positive.), ~gsub("<0.1", "Yes", .)) 
+
+
+dim(merged) #2299  145 (2399 with ineligables included)
+table(merged$FLT3.ITD.positive.) #423 positive patients
+
+# merged %>%
+#   # filter(USI %in% pts.cnv.fix$USI)
+#   filter(USI %in% "PARMPM")
+
+# any(is.na(merged$USI)) #OK
+```
+
+```{r}
+RNAindel <- openxlsx::read.xlsx("Mutation_Data/TARGET_AML_RNAindel_Targeted_Alignment_Summarized_Calls_WT1_FLT3_NPM1_CEBPA_KIT_04.12.2021.xlsx")
+
+
+# head(RNAindel)
+dim(RNAindel) #615  61
+# table(duplicated(RNAindel$Patient_ID)) #OK
+# table(duplicated(RNAindel$USI)) #OK
+```
+
+```{r}
+raw_RNAindel <- read.csv(file.path(PROJHOME, "/2020.04.13_CICERO_Fusion_St.Jude/CICERO_CDEs/RNAindel_Kohei_RNAseq_Data.csv")) %>% 
+  mutate(USI=str_split_fixed(Sample, pattern = "-", n=5)[,3]) %>% 
+  dplyr::select(USI, Sample, everything())
+
+
+# head(raw_RNAindel)
+dim(raw_RNAindel) #787
+```
+
+```{r}
+earlier_studies <- openxlsx::read.xlsx("Mutation_Data/ITD_database_across_all_studies.xlsx") %>% 
+    mutate_all(~gsub("UnkNown", "Unknown", .)) %>% 
+    mutate_at(vars(Karyotype), ~gsub(":", ";", .))
+
+
+# head(earlier_studies)
+dim(earlier_studies) #2284   12
+length(unique(earlier_studies$REG_No))
+
+# table(earlier_studies$ITD) #79 unique FLT3-ITD positive added
+# table(earlier_studies$REG_No %in% merged$Reg.)
+```
+
+```{r}
+UBTF <- openxlsx::read.xlsx("Mutation_Data/Fred_Hutchinson UBTF cases2.xlsx")
+
+
+# head(UBTF)
+dim(UBTF) #45  2
+# colnames(UBTF)
+```
+
+```{r}
+WGS.1031 <- read.csv("Mutation_Data/AMLR_4deliver_v2_Nov24_SNVIndels.csv")  
+WGS.RunTable <- read.csv("References/AMLR_4deliver_v2_Nov24_RunTable.csv")
+
+WT1.WGS.1031 <- WGS.1031 %>%
+  filter(Gene=="WT1") %>% 
+  add_row(USI=setdiff(WGS.RunTable$USI,.$USI)) %>% 
+  mutate(WT1_Mutation_WGS=case_when(
+    Gene=="WT1" ~ "Yes",
+    TRUE ~ "No")) %>% 
+  group_by(USI) %>% 
+  mutate_at(vars(Chr:WT1_Mutation_WGS), ~collapseRows(., uniq = TRUE, sep="; ")) %>% 
+  ungroup() %>% 
+  filter(!duplicated(USI)) 
+  # filter(duplicated(USI) | duplicated(USI, fromLast = TRUE)) %>% 
+  # arrange(USI)
+
+
+WT1.byWGS <- pull(WT1.WGS.1031, USI)
+
+
+# head(WT1.WGS.1031)
+dim(WT1.WGS.1031) #132  24
+# table(WT1.WGS.1031$WT1_Mutation_WGS)
+```
+
+```{r}
+#This is the original CDEs sent to COG with the WT1 mutations by WGS/PCR Assay
+official <- openxlsx::read.xlsx(file.path(CDE, "/Merged/00_Old/AAML1031_TARGET_format_033119_v10_121120_SENT_TO_COG.xlsx"), 
+                                check.names = FALSE, sep.names=" ",
+                                na.strings = c("NA","#N/A","#NA", "N/A", "^$", "^\\.$", "", ".")) %>% 
+  #There are about 40 patients with NA for USI and no Reg. # 
+  # filter(!is.na(USI)) %>% 
+  
+  # #Checking that WT1 mutation calls in WGS match with official CDEs (eg not all WT1 data is from PCR assay)
+  # #Checks OK BUT NOT OK bc none of these were incorporated into the Merged CDEs - oof
+  left_join(., dplyr::select(WT1.WGS.1031, USI, WT1_Mutation_WGS),
+            by="USI") %>%
+  dplyr::select(USI, matches("WT1"), everything())
+
+# #First patients screened by by WGS/PCR Assay
+WT1.byPCR <- official %>%
+  filter(!is.na(`WT1 mutation?`),
+         !is.na(USI)) %>%
+  filter(!USI %in% WT1.byWGS) %>% 
+  pull(USI)
+
+length(WT1.byPCR) #180
+
+
+dim(official)
+# table(official$`WT1.mutation?`)
+ #  No  Yes <NA> 
+ # 245   76  910 
+```
+
+
+```{r}
+#Used to update WT1 and others in Feb 2020 version of the Merged CDEs
+muts <-  openxlsx::read.xlsx(file.path(CDE, "/Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_9.4.19_updated_mutations_020320.xlsx"), 
+                   sheet=1, skipEmptyRows = TRUE, check.names = FALSE,
+                   na.strings = c("NA","#N/A","#NA", "N/A", "^$", "^\\.$")) %>%
+  mutate(Reg.=as.numeric(Reg.), 
+         WT1.mutation.=ifelse(WT1.mutation. == "YES", "Yes", WT1.mutation.),
+         FLT3.PM=ifelse(grepl("none",FLT3.PM), "None", FLT3.PM)) %>%
+  arrange(Reg.)
+
+
+dim(muts)
+
+WT1.byTargAlign <- muts %>% 
+  filter(Protocol=="AAML1031", WT1.mutation.!="Unknown", !USI %in% c(WT1.byPCR, WT1.byWGS)) %>% 
+  pull(USI)
+  
+length(WT1.byTargAlign) #825
+
+
+# table(muts$WT1.mutation.)
+#  No   Unknown     Yes 
+# 1908     163     202
+
+# table(muts$Protocol)
+```
+
+```{r}
+TARGET.CDEs <- read.csv(file.path(CDE, "00_Archive/0531/TARGET_AML_current_asof_june30_2016_UPDATED_CLEAN_8.27.19.csv")) 
+
+
+# head(TARGET.CDEs)
+dim(TARGET.CDEs) #1000   96
+# table(TARGET.CDEs$WGS)
+table(TARGET.CDEs$WGS, 
+      TARGET.CDEs$Part.of.684.cohort)
+# any(is.na(TARGET.CDEs$USI))
+# any(TARGET.CDEs$USI == "Unknown")
+```
+
+```{r}
+HasRNAseqMuts <- openxlsx::read.xlsx("References/TARGET_AML_BCCA_RNAseq_WT1_Calls_withNegatives_04.19.2021.xlsx") %>% 
+  pull(Patient_USI) %>% 
+  unique()
+
+# head(HasRNAseqMuts)
+length(HasRNAseqMuts)
+```
+
+```{r}
+sample_info <- read.csv(file.path(TARGET, "SequencingDataMatrix/TARGET_AML_Ribodepleted_Manifest_02.04.21.csv")) 
+
+
+dim(sample_info)
+```
+
+```{r}
+AAML1031.pts.COG <- openxlsx::read.xlsx(file.path(TARGET,"Clinical/metadata/CDE_documents_from_COG/AAML1031pts.xls.xlsx"))
+
+
+# head(AAML1031.pts.COG)
+dim(AAML1031.pts.COG) #87  5
+```
+
+```{r}
+AML.pts.COG <- openxlsx::read.xlsx(file.path(TARGET,"Clinical/metadata/CDE_documents_from_COG/AMLpts.xlsx")) %>% 
+  mutate(Patient.registration.number=as.character(Patient.registration.number))
+
+# head(AML.pts.COG)
+# dim(AML.pts.COG) #481   6
+table(AML.pts.COG$Study)
+```
+
+
+```{r}
+#This version was updated by Rob/COG to have the changes to the mutations noted.
+AML.pts.COG_v2 <- openxlsx::read.xlsx(file.path(CDE,"Merged/00_Old/AMLpts_v2.xlsx")) %>% 
+  mutate(Patient.registration.number=as.character(Patient.registration.number))
+
+
+dim(AML.pts.COG_v2)
+table(AML.pts.COG_v2$Study)
+# table(AML.pts.COG_v2$Patient.registration.number %in% AML.pts.COG$Patient.registration.number)
+```
+
+```{r}
+WT1.data <- openxlsx::read.xlsx(file.path(TARGET,"Clinical/metadata/CDE_documents_from_COG/WT1_data_412_2961_03p1.xlsx"))  %>% 
+  mutate(Reg.=as.character(reg_no)) %>% 
+  select(Reg., everything(), -reg_no)
+
+
+head(WT1.data)
+dim(WT1.data)
+```
+
+
+# Harmonize 1031 CDEs 
+
+We realized that there are WGS calls that are present in the official CDEs but not in our Merged CDEs.
+
+```{r}
+colname_map <- openxlsx::read.xlsx(file.path(CDE, "00_Archive/TARGET_AML_Colnames_Mapping_File_v3.xlsx"))
+dim(colname_map)
+
+
+# setdiff(colnames(merged), cols_conversion$Merged_CDEs_Colnames) #OK Updated_CNV
+# filter(colname_map, grepl("Kit", Merged_CDEs_Colnames))
+```
+
+```{r}
+#Older datasets
+# feb2019 <- readRDS("Old_versions/AAML1031_TARGET_CDEs_with_HiAR_PrimaryCyto_and_FusionCalls_02.28.19.RDS")
+# dim(feb1031)
+
+# oct2018 <- read.csv("Old_versions/AAML1031_TARGET_CDEs_with_HiAR_PrimaryCyto_and_FusionCalls_10.11.18.csv")
+# 
+# dim(oct2018)
+
+official_cog <- openxlsx::read.xlsx(file.path(TARGET,"Clinical/metadata/CDE_documents_from_COG/AAML1031_TARGET_format_033119.xlsx"))
+# 
+# dim(official)
+```
+
+```{r}
+# table(is.na(official$USI)) #58 NAss
+# table(is.na(official$`WBC (x10^3/MicroLiter) levels`)) #3 are NAs
+# table(is.na(official$`Age in days at enrollment`)) #0 NAs
+# table(is.na(official$`EFS time (days)`)) #0 NAs
+```
+
+```{r}
+official.addReg <- official %>% 
+  left_join(., select(merged, Reg.,EFS.time..days.,Age.in.days),
+            by=c("Age in days at enrollment"="Age.in.days","EFS time (days)"="EFS.time..days.")) %>% 
+  select(Reg., USI, everything())
+
+# table(is.na(official.addReg$USI))
+# table(is.na(official.addReg$Reg.))
+
+
+#Check: OK
+# official.addReg %>% 
+#   filter(is.na(USI)) %>% 
+#   arrange(desc(Reg.)) %>% 
+#   select(1:2, `Age in days at enrollment`, `EFS time (days)`, `WBC (x10^3/MicroLiter) levels`, Sex, Race, `Bone marrow leukemic blast percentage (%)`) 
+
+dim(official.addReg)
+```
+
+```{r}
+merged.TARGET <- merged %>% 
+  filter(Protocol != "AAML1031" | !Reg. %in% official.addReg$Reg.) #63 1031 patients are missing 
+
+dim(merged.TARGET)
+table(merged.TARGET$Protocol)
+```
+
+```{r}
+merged.1031 <- merged %>% 
+   filter(Protocol == "AAML1031", Reg. %in% official.addReg$Reg.) 
+
+
+dim(merged.1031) #1294 USIs (why do we have extra?)
+table(merged.1031$Protocol) 
+dim(official) #1231 
+
+
+# These extra patients  are mostly eligible
+# They are Arm D patients and lots of unknow arm (so likely Arm D)
+# merged.1031 %>%
+#   filter(!Reg. %in% official.addReg$Reg.) %>%
+#   group_by(Eligibility_Comments, Treatment.Arm) %>%
+#   count()
+```
+
+
+```{r}
+cols_conversion <- colname_map %>% 
+  filter(!is.na(AAML1031_Official_Colnames)) %>% 
+  filter(!is.na(Merged_CDEs_Colnames))
+
+comp <- merged.1031 %>% 
+  select(Reg., all_of(cols_conversion$Merged_CDEs_Colnames)) %>% 
+  rename_all(~c("Reg.",cols_conversion$AAML1031_Official_Colnames)) %>% 
+  
+  #Use Reg. that have been merged in
+  #But loss of some patients who are not in the official dataset
+  inner_join(., select(official.addReg,Reg., all_of(cols_conversion$AAML1031_Official_Colnames)), 
+            by="Reg.", 
+            suffix=c("_merged", "_official")) %>% 
+  
+  #Order columns
+  select(colnames(.)[order(colnames(.))]) %>%
+  mutate(USI=USI_merged) %>% 
+  # filter(USI=="PAUHFI") %>%
+
+  #Make into long format
+  gather(ColumnName, Value, -Reg., -matches("^USI")) %>%
+  arrange(USI) %>%
+  separate(ColumnName, into=c("ColumnNames","Source"), sep="_", fill="left", extra="merge", remove=FALSE) %>% 
+
+
+  #ensure different typing is not causing issues
+  mutate_at(vars(Value), ~as.character(.)) %>%
+  
+  #compare each value for each column for each patient
+  group_by(Reg., ColumnNames) %>%
+  mutate(Value_Cleaned=case_when(
+    any(is.na(Value)) & any(grepl("^Unknown$", Value))  ~ "Unknown",
+    grepl("Treatment Arm", ColumnNames) ~ unique(gsub(": Standard Chemotherapy.+", "", Value)), 
+    TRUE ~ Value)) %>% 
+  mutate(Different=!identical(Value_Cleaned[1], Value_Cleaned[2])) %>%
+  ungroup() 
+
+
+
+# comp
+```
+
+
+```{r}
+comp.wide <- comp %>% 
+  select(-Value, -ColumnNames,-Source) %>% 
+  tidyr::pivot_wider(id_cols = c(USI,Reg.),
+                     names_from=ColumnName,
+                     names_glue = "{ColumnName}_{.value}",
+                     values_from=c(Value_Cleaned,Different)) %>% 
+  select(USI,Reg., everything()) %>% 
+  select(-matches("official_Different")) %>% 
+  rename_all(~gsub("_Value_Cleaned", "", .))
+  # select_if(~!all(is.na(.)))
+  
+
+# comp.wide
+dim(comp.wide) #1231  302
+# any(is.na(comp.wide$USI))
+```
+
+```{r}
+any_differences  <- sapply(grep("merged_Different", colnames(comp.wide), value=TRUE), function(x) any(comp.wide[[x]]))
+no_differences <- any_differences[!any_differences]
+length(no_differences) #78 columns OK
+
+
+differences <- any_differences[any_differences]
+length(differences) #22 columns different
+
+to_select <- names(differences) %>% 
+  gsub("_merged_Different", "", .) %>% 
+  gsub("^(CEBPA).+", "\\1", .) 
+# to_select
+
+cols_to_select <- lapply(to_select, function(x) grep(x, colnames(comp.wide), value=T,fixed = TRUE)) %>%
+  unlist() %>% 
+  unique()
+
+# cols_to_select
+# cols_to_select %>%
+#   grep("KIT", ., ignore.case = TRUE)
+```
+
+```{r}
+comp.wide.toCheck <- comp.wide %>% 
+  select(Reg., USI, all_of(cols_to_select))
+  # select(Reg., USI, colnames(.)[order(colnames(.))]) 
+
+dim(comp.wide.toCheck)
+# write.csv(comp.wide.toCheck, "TARGET_AAML1031_Merged_vs_Official_Discrepancies.csv", row.names = FALSE)
+```
+
+```{r}
+merged.1031.updated <- comp.wide.toCheck %>% 
+  mutate_at(vars(CSF3R_merged), ~case_when(
+    CSF3R_merged_Different ~ CSF3R_official,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(Eligibility_merged), ~case_when(
+    Eligibility_merged_Different & grepl("eligible", Eligibility_official) ~ Eligibility_official,
+    TRUE ~ .
+  )) %>% 
+  mutate_at(vars(GATA2_merged), ~case_when(
+    GATA2_merged_Different ~ GATA2_official,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(ISCN_merged), ~case_when(
+    ISCN_merged_Different & ISCN_merged == "Unknown" & grepl("^[0-9]", ISCN_official) ~ ISCN_official,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(Race_merged), ~case_when(
+    Race_merged_Different ~ Race_official,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(`RAM Positive_merged`), ~case_when(
+    `RAM Positive_merged_Different` & `RAM Positive_merged`=="Unknown" ~ `RAM Positive_official`,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(`WHO Classification (final: path then study entry)_merged`), ~case_when(
+    `WHO Classification (final: path then study entry)_merged_Different` ~ `WHO Classification (final: path then study entry)_official`,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(`WT1 mutation?_merged`), ~case_when(
+    `WT1 mutation?_merged_Different` & `WT1 mutation?_official` =="Yes" ~ `WT1 mutation?_official`, 
+    # `WT1 mutation?_merged_Different` & `WT1 mutation?_merged` == "Yes" ~ `WT1 mutation?_merged`,
+    TRUE ~ .)) %>% 
+  mutate(WT1.mutation.comments=case_when(
+    `WT1 mutation?_merged_Different` & `WT1 mutation?_official` =="Yes" ~ "Positive missed during WGS data merges",
+    `WT1 mutation?_merged_Different` & `WT1 mutation?_merged` == "Yes" ~ "Positive added from BCCA transcriptome SNV/indel calls",
+    `WT1 mutation?_merged_Different` & `WT1 mutation?_merged` == "No" ~ "Negative added from BCCA transcriptome SNV/indel calls",
+    `WT1 mutation?_merged_Different` ~ "changed", 
+     !`WT1 mutation?_merged_Different` ~ "No change"))  %>% 
+  select(Reg.,USI, matches("_merged$"), WT1.mutation.comments) %>% 
+  rename_all(~gsub("_merged", "", .))
+  
+
+
+cols_conversion_updates <- cols_conversion %>% 
+  filter(grepl("Reg.",Merged_CDEs_Colnames) |
+         AAML1031_Official_Colnames %in% colnames(merged.1031.updated))
+
+cols_to_add <- setdiff(colname_map$Merged_CDEs_Colnames, cols_conversion_updates$Merged_CDEs_Colnames) %>% 
+  grep("Reg.", ., invert = T, value = T) %>% 
+  .[!is.na(.)]
+
+
+merged.1031.updated <- merged.1031.updated %>%
+  select(Reg., all_of(cols_conversion_updates$AAML1031_Official_Colnames), WT1.mutation.comments) %>% 
+  rename_at(vars(USI:`If other Non-CNS site of involvement, (specify)`), ~c(cols_conversion_updates$Merged_CDEs_Colnames)) %>% 
+  left_join(., select(merged.1031, Reg., all_of(cols_to_add)), 
+            by="Reg.")
+  
+  
+  
+dim(merged.1031.updated) #1231  145
+# cols_conversion_updates
+
+
+table(merged.1031.updated$WT1.mutation.)
+table(merged.1031$WT1.mutation.)
+table(merged.1031.updated$WT1.mutation.comments)
+```
+
+```{r}
+#Make the final Merged CDEs object
+merged.updated <- merged.TARGET %>% 
+  bind_rows(merged.1031.updated)
+
+
+dim(merged.updated)   #2399  145
+dim(merged) #2399  144
+# setdiff(colnames(merged.updated), colnames(merged)) #OK
+# setdiff(colnames(merged),colnames(merged.updated))  
+```
+
+OK so the general approach to COG for the updates
+1) Focus on the mutations for Katherines dataset (esp WT1 with evidence)
+2) Create a Tally of cytogenetics and binary columns which are mismatched 
+  - del5q, mono7, trisomy8, trisomy21, mono5, del7q, del9q(?)
+3) Redcap instance for transarency and logged/version controlled changes
+
+Ask Lisa Brodersen if these two are RAM+
+831425
+854605
+
+
+
+
+#Clean the RNAindel/BCCA SNVs Full Dataset
+
+False Postive Probes from BCCCA:
+
+chr11:32421545 c.360insC
+chr11:32456619 c.271delGGC
+
+```{r}
+#This a subset of the Target Alignement and RNAindel merge. It does NOT include WT1 negative patients.
+RNAindel_full <- openxlsx::read.xlsx("Mutation_Data/TARGET_AML_TargAlignment_KMungall_RNAindel_StJude_Combined_Calls_noHitThreshold_WT1_only_04.19.2021.xlsx")
+
+dim(RNAindel_full)
+ 
+
+length(unique(RNAindel_full$Patient_ID)) #903 This seems like too few patients?? Yes, it only includes pts with any WT1 mutation call, none of the negative cases
+length(unique(RNAindel_full$USI)) #825 patient samples
+table(RNAindel_full$Group)
+```
+
+```{r}
+RNAindel_full_dx <- RNAindel_full %>% 
+  filter(Sample_Timepoint=="Dx", !grepl("Kas|MV4", USI)) %>% 
+  dplyr::select(Patient_ID, USI,Variant_Caller, GeneName, WT1_Mutation, Chr,	Pos_hg19,	Pos_hg38,Alteration,Alteration_HitCount, REF_CNT,	ALT_CNT) %>% 
+  left_join(.,  dplyr::select(merged, Protocol, USI), by="USI") %>% 
+  mutate(Sample=case_when(
+    !grepl("TARGET", Patient_ID) ~ paste0("TARGET.20.",gsub("-", ".", Patient_ID)),
+    any(grepl("-", Patient_ID)) ~ gsub("-", ".", Patient_ID),
+    TRUE ~ Patient_ID)) %>% 
+  mutate_at(vars(Sample), ~ gsub("_RBS_srt", "", .)) %>% 
+  dplyr::select(Sample, everything()) 
+
+
+dim(RNAindel_full_dx)
+table(duplicated(RNAindel_full_dx$Sample))
+
+
+
+#So these are all the WT1 negatives that are not included here. 
+# table(unique(RNAindel$USI) %in% unique(RNAindel_full_dx$USI)) #354 were already "curated" in the RNAindel dataset
+# table(!unique(RNAindel_full_dx$USI) %in%  unique(RNAindel$USI) )
+# common <- intersect(RNAindel_full_dx$USI, RNAindel$USI)
+# missing <- RNAindel %>% 
+#   filter(! USI %in% common)
+# 
+# dim(missing)
+# table(missing$Protocol)
+
+
+#The Patient_ID dont match between the two datasets...
+# table(RNAindel_full_dx$Sample %in% sample_info$Sample) #OK 
+# table(RNAindel_full_dx$Patient_ID %in% RNAindel$Patient_ID)
+# table( RNAindel$Patient_ID %in% RNAindel_full_dx$Patient_ID) 
+
+
+
+#Don't need the Normal bone marrows
+# filter(RNAindel_full_dx , !Sample %in% sample_info$Sample)
+# grep("RO02395",sample_info$Sample, value=T)
+```
+
+
+```{r}
+RNAindel_Rescues <- RNAindel_full_dx %>%
+  #Examine those not already included in the clean file with >7 hits
+  filter(!USI %in% RNAindel$USI) %>% 
+  
+  #Counts number of calls per patient
+  group_by(USI) %>%
+  mutate(N=n()) %>%
+  ungroup() %>%
+  
+  #Re-order columns
+  dplyr::select(N, Sample,USI, Variant_Caller, WT1_Mutation,Alteration, Alteration_HitCount, -REF_CNT, -ALT_CNT, everything()) %>%
+  arrange(desc(N))  %>%
+
+  
+  #Denote pts with only FP calls, and remove those rows with FP calls for pts with  potential true positive calls
+  group_by(USI) %>%
+  mutate(All_Fail=ifelse(sum(grepl("c.360insC|c.271delGGC", Alteration)) == N, TRUE, FALSE)) %>%
+  ungroup() %>%
+  mutate_at(vars(WT1_Mutation), ~case_when(
+    grepl("c.360insC|c.271delGGC", Alteration) & !All_Fail ~ "Remove Row",
+    TRUE ~ .)) %>% 
+  filter(!grepl("Remove Row", WT1_Mutation), Alteration != "0") %>% 
+  
+  #Update WT1_Mutation to be either False Positive, Low Confidence, or Possible
+  group_by(USI) %>% 
+  mutate_at(vars(WT1_Mutation), ~case_when(
+     All_Fail ~ "False positive",
+    all(Alteration_HitCount == 1) ~ "Low Confidence",
+    any(Alteration_HitCount > 1) ~ "Possible",
+    TRUE ~ .)) %>% 
+  ungroup()
+
+
+dim(RNAindel_Rescues)
+
+  
+length(unique(RNAindel_Rescues$USI)) #465
+table(RNAindel_Rescues$WT1_Mutation)
+
+# table(RNAindel_Rescues$All_Fail)
+table(RNAindel_Rescues$Variant_Caller) #100% from BCCA
+```
+
+```{r}
+check <- RNAindel_full_dx %>% 
+  filter( grepl("c.271delGGC|c.360insC", Alteration)) %>%
+  left_join(., RNAindel, by="USI", suffix=c("_AllPts", "_FilteredPts")) %>%
+  dplyr::select(USI,matches("Patient_ID"), matches("WT1"))
+
+
+dim(check) #765  14 - thats a ton!
+table(check$USI %in% RNAindel$USI)
+# write.csv(., "TARGET_AML_TargAlign_FalsePositives_check.csv", row.names = FALSE)
+```
+
+
+chr11:32421545 c.360insC
+chr11:32456619 c.271delGGC
+
+
+# Clean up CDEs using COG Data
+
+From Rob
+
+The AAML1031 data look good – in regard to the ITD, NPM and CEBPA data, these data match the data to the CRF data. However I do find 87 eligible non-Arm D patients with data for these mutations according to the CRF data, so I will use the CRF data to be complete. These patients are not summarized in the TARGET file so I have attached a list (AAML1031pts.xlsx) in case you are interested in adding these patients to the overall TARGET file.
+
+* these patients are ineligable in our dataset - will need to clarify. 
+ 
+Response from Rob
+
+Since CEBPA, NPM1, and ITD data were directly related to risk group classification and primary end points for the study, I believe that the consent to banked specimen ques6on does not apply to these muta6ons but rather to other muta6ons collected. So I believe that data for CEBPA, NPM1 and ITD are okay for analysis for AAML1031 patients. However, for other muta6ons such as WT1, etc., then the consent question would apply and data will be unknown
+
+ 
+```{r}
+merged %>%
+  filter(Reg. %in% AAML1031.pts.COG$Patient.registration.number) %>%
+  group_by(Eligibility) %>% 
+  count()
+```
+ 
+From Rob
+
+In regard to the other studies, I realize there are updates to these data for some patients as you indicated and that’s fine. However I find many patients who are unknown in the TARGET file (either identified as Unknown or missing) but I have in my current file with data for either NPM, CEBPA or ITD.  Most of these patients are from 2961 and unknown for NPM specifically. These patients are attached in the AMLpts.xls. The columns that are indicated as “previous data” are the data that I currently have. 
+
+```{r}
+dim(AML.pts.COG)
+dim(AML.pts.COG_v2)
+
+table(AML.pts.COG$Patient.registration.number %in% earlier_studies$REG_No) #457 in this dataset
+table(AML.pts.COG$Patient.registration.number %in% merged.updated$Reg.) #25 in this dataset
+# colnames(AML.pts.COG)
+```
+
+```{r}
+check_earlier <- earlier_studies %>% 
+  filter(REG_No %in% AML.pts.COG$Patient.registration.number) %>% 
+  left_join(., rename_at(AML.pts.COG, vars(Study:Allelic.ratio), ~paste0(.,"_COG")),
+            by=c("REG_No"="Patient.registration.number")) %>% 
+  select(colnames(.)[order(colnames(.))]) 
+  # arrange(desc(CEBPA))
+  
+
+dim(check_earlier)
+# table(check_earlier$CEBPA, check_earlier$CEBPA.Mutation_COG) #1 unknown should be No, 1 conflict and keep
+# table(check_earlier$ITD, check_earlier$`FLT3.ITD?_COG`) #20 unknowns become No, 1 unknown becomes Yes
+# table(check_earlier$NPM1, check_earlier$NPM.Mutation_COG) #401 NPM unknowns become No, and 42 Unkown become Yes
+
+
+# check_earlier %>% 
+#   filter(CEBPA=="Yes" & CEBPA.Mutation_COG=="No")
+```
+
+From Rhonda:
+so this patient (701385) is one of the few single N-term (as opposed to Bzip) CEBPA positive patients we have as determined by Phoenix way back when.  If it were bzip positive only, I would say include it – but now that I see it’s N-term only I think we should keep negative.  Sorry, that’s probably my fault for merging and seeing “positive” without realizing it’s the ONLY 2961 patient that’s N-term positive only.
+ 
+ 
+```{r}
+check_merged <- merged.updated %>% 
+  select(Reg., Protocol, matches("^NPM|^CEBPA|^FLT3.[IA]")) %>% 
+  inner_join(.,  rename_at(AML.pts.COG, vars(Study:Allelic.ratio), ~paste0(.,"_COG")),
+            by=c("Reg."="Patient.registration.number")) %>% 
+  select(colnames(.)[order(colnames(.))])
+
+
+dim(check_merged)
+# table(check_merged$CEBPA.mutation., check_merged$CEBPA.Mutation_COG) #no changes
+# table(check_merged$FLT3.ITD.positive., check_merged$`FLT3.ITD?_COG`) #update 2 unknowns
+# table(check_merged$NPM.mutation., check_merged$NPM.Mutation_COG) #19 unknowns need to become No
+
+
+# check_merged %>% 
+#   filter(FLT3.ITD.positive. == "Unknown", `FLT3.ITD?_COG`=="No")
+# check_merged %>%
+#   filter(NPM.mutation.=="Unknown", NPM.Mutation_COG=="No") %>% 
+#   mutate(InEarlierStudies=Reg. %in% earlier_studies$REG_No) %>% 
+#   group_by(InEarlierStudies) %>% 
+#   count()
+```
+
+
+## Clean the Earlier Studies Dataset
+
+```{r}
+#From Rob 5/20/21
+#Reg# 749858 (AAML03P1) – this patient is not in the listing but I have for NPM- negative, CEBPA-negative, ITD-positive with AR=0.74, WT1-negative
+#Reg# 701385 (2961) – this patient is listed as having CEBPA -negative, WT1-unknown, but I have CEBPA-positive and WT1-negative.
+last_pts_fix <- c(749858,701385)
+
+last_pts_fix %in% merged.updated$Reg.
+last_pts_fix %in% earlier_studies$REG_No
+last_pts_fix %in% AML.pts.COG$Patient.registration.number
+```
+
+```{r}
+dim(WT1.data) #412
+
+# table(WT1.data$Reg. %in% earlier_studies$REG_No) #401 in earlier studies
+# table(WT1.data$Reg. %in% merged.updated$Reg.) #7 in the merged CDEs
+
+missing_pts <- setdiff(WT1.data$Reg., c(earlier_studies$REG_No, merged.updated$Reg.))
+length(missing_pts) #11 patients in this file not in the earier files  or merged CDEs
+
+
+# table(WT1.data$WT1_mutation)
+# table(WT1.data$wt1_)
+```
+
+```{r}
+#Need to clean up our version of the earlier studies with data from COG 
+earlier_studies.cleaned <-   earlier_studies %>% 
+  left_join(., AML.pts.COG %>%  
+              rename_at(vars(Study:Allelic.ratio), ~paste0(.,"_COG")),
+            by=c("REG_No"="Patient.registration.number")) %>% 
+
+  
+  
+  mutate_at(vars(NPM1), ~case_when(
+    .=="Unknown" & grepl("Yes|No", NPM.Mutation_COG) ~ gsub("\\s{1,}","", NPM.Mutation_COG), 
+    TRUE ~ gsub("\\s{1,}","", .))) %>% 
+  mutate_at(vars(ITD), ~case_when(
+    .=="Unknown" & grepl("Yes|No", `FLT3.ITD?_COG`) ~ `FLT3.ITD?_COG`,
+    TRUE ~ .)) %>% 
+  mutate_at(vars(ITD.AR), ~case_when(
+    ITD == "Yes" & (is.na(.) | .=="Unknown") ~  Allelic.ratio_COG,
+    TRUE ~ . )) %>% 
+  mutate_at(vars(CEBPA), ~case_when(
+    .=="Unknown" & grepl("No|Yes", CEBPA.Mutation_COG) ~ CEBPA.Mutation_COG, 
+    .=="Yes" & grepl("No", CEBPA.Mutation_COG) ~ CEBPA.Mutation_COG,#1 data conflicts, so keep COG
+    TRUE ~ .)) %>% 
+  
+  # left_join(., select(WT1.data, Reg., WT1.Mutation_COG=wt1_) %>% 
+  #             mutate(WT1.Mutation_COG=gsub(1,"Yes", gsub(0, "No", WT1.Mutation_COG))), 
+  #           by=c("REG_No"="Reg.")) %>% 
+  # mutate_at(vars(WT1), ~case_when(
+  #   .=="Unknown" & grepl("Yes|No", WT1.Mutation_COG) ~ WT1.Mutation_COG,
+  #   TRUE ~ .))  %>% 
+  
+  select(-matches("_COG")) %>%
+  rename_all(., ~c("Reg.", "USI", "Protocol", "FLT3.ITD.positive.", "FLT3.ITD.allelic.ratio",
+                   "WT1.mutation.", "NPM.mutation.", "CEBPA.mutation.", "NUP98.NSD1","DEK.NUP214",
+                   "trisomy.8", "ISCN"))
+
+
+# head(earlier_studies.cleaned)
+dim(earlier_studies.cleaned) #2284   18
+dim(earlier_studies) # 2284   12
+```
+
+```{r}
+#Reg# 749858 (AAML03P1) – this patient is not in the listing but I have for NPM- negative, CEBPA-negative, ITD-positive with AR=0.74, WT1-negative CHECKS OUT OKAY
+#Reg# 701385 (2961) – this patient is listed as having CEBPA -negative, WT1-unknown, but I have CEBPA-positive and WT1-negative. CEBPA vs Negative needs to be addressed. 
+# AML.pts.COG %>% 
+#   filter(Patient.registration.number %in% last_pts_fix)
+# 
+# earlier_studies.cleaned %>% 
+#   filter(Reg. %in% last_pts_fix)
+```
+
+```{r}
+# table(earlier_studies.cleaned$WT1.Mutation_COG)
+# table(earlier_studies.cleaned$WT1, 
+#       earlier_studies.cleaned$WT1.Mutation_COG)
+
+table(earlier_studies$WT1)
+table(earlier_studies.cleaned$WT1)
+
+# dim(earlier_studies.cleaned)
+# head(earlier_studies.cleaned)
+
+# table(earlier_studies.cleaned$CEBPA.mutation.)
+# table(earlier_studies$CEBPA)
+# #This patient was N-term only CEBPA, hence the decrease in CEBPA count
+# filter(earlier_studies.cleaned, Reg.=="701385")
+
+# table(earlier_studies.cleaned$NPM.mutation.)
+# table(earlier_studies$NPM1)
+
+# table(earlier_studies.cleaned$FLT3.ITD.positive.)
+# table(earlier_studies$ITD)
+```
+
+```{r}
+#Update these patients using "older" molecular datasets, but should be updated now. 
+earlier_studies.common <- earlier_studies.cleaned %>% 
+  distinct() %>% 
+  filter(Reg. %in% merged.updated$Reg.) %>% 
+
+  mutate(Eligibility=ifelse(Reg. %in% inelig, "remove","OK"),
+         Keep=case_when(
+    Reg.=="785646" & FLT3.ITD.positive.=="Yes" ~ TRUE,
+    Reg.=="785646" & FLT3.ITD.positive.!="Yes" ~ FALSE,
+
+    Reg.=="790943" & `NUP98.NSD1`=="No" ~ TRUE,
+    Reg.=="790943" & `NUP98.NSD1`=="Unknown" ~ FALSE,
+
+    Reg.=="796079" & `NUP98.NSD1`=="No" ~ TRUE,
+    Reg.=="796079" & `NUP98.NSD1`=="Unknown" ~ FALSE,
+
+    TRUE ~ TRUE)) %>%
+  filter(Keep) %>%
+  dplyr::select(-Keep) %>%
+  mutate_at(vars(FLT3.ITD.positive., WT1.mutation.:CEBPA.mutation.), ~gsub(" {1,}", "", .)) %>% 
+
+  left_join(., dplyr::select(merged.updated, Reg., 
+                             matches("FLT3|FLT3.ITD.allelic.ratio|WT1|NPM|CEBPA|ISCN|Primary.Fusion")),
+            by="Reg.", 
+            suffix=c("_Update","_Current")) %>% 
+  dplyr::select(colnames(.)[order(colnames(.))]) %>% 
+  mutate_at(vars(matches("CEBPA|WT1|NPM1|FLT3.ITD.positive")), ~gsub(" ","", .)) %>% 
+  
+  mutate(WT1.update=WT1.mutation._Current != WT1.mutation._Update, #11 pts changed to Yes, and 9 Unkown changed to No
+         CEBPA.update=CEBPA.mutation._Current != CEBPA.mutation._Update, #4 Unkowns changed to No
+         FLT3.AR.update=FLT3.ITD.allelic.ratio_Current != FLT3.ITD.allelic.ratio_Update,
+         FLT3.update=FLT3.ITD.positive._Current != FLT3.ITD.positive._Update, #3 changed to Yes with FLT3 AR
+         ISCN.update=ISCN_Current != ISCN_Update, #No significant changes in ISCN 
+         NPM.update=NPM.mutation._Current != NPM.mutation._Update) %>% # 6 Unknown NPM1 changed to No
+  arrange(WT1.mutation._Update)  %>% 
+  filter(WT1.update | CEBPA.update |  FLT3.update | FLT3.AR.update| NPM.update)
+
+# write.csv(earlier_studies.common, "TARGET_AML_Earlier_Studies_Common_updated_WT1_data.csv", row.names = FALSE)
+# table(earlier_studies.common$WT1.mutation._Update)
+
+
+earlier_studies.common <- earlier_studies.common %>%
+
+  #Make the updates
+  mutate_at(vars(WT1.mutation._Current), ~case_when(
+    WT1.update & WT1.update != "Unknown" ~ WT1.mutation._Update,
+    TRUE ~ .)) %>%
+  mutate(WT1.comments2=case_when(
+    WT1.update & WT1.mutation._Update == "Yes" ~ "Positive added based on Phoenix Ho's PCR Screen",
+    WT1.mutation._Current=="Yes" & WT1.mutation._Update=="Yes" ~ "No change",
+    WT1.update ~ "",
+    !WT1.update ~ "")) %>%
+  mutate_at(vars(CEBPA.mutation._Current), ~case_when(
+    CEBPA.update & CEBPA.update  != "Unknown" ~ CEBPA.mutation._Update, #2 changed
+    TRUE ~ .)) %>%
+  mutate_at(vars(FLT3.ITD.positive._Current), ~case_when(
+    FLT3.update & FLT3.ITD.positive._Update != "Unknown" ~ FLT3.ITD.positive._Update,
+    TRUE ~ .)) %>%
+  mutate_at(vars(NPM.mutation._Current), ~case_when(
+      NPM.update & NPM.mutation._Update != "Unknown" ~ NPM.mutation._Update,
+      TRUE ~ .)) %>%
+  mutate_at(vars(FLT3.ITD.allelic.ratio_Current), ~case_when(
+      FLT3.AR.update &  . == "<0.1" ~ FLT3.ITD.allelic.ratio_Update,
+      TRUE ~ .)) %>% 
+  
+    #Select Final Columsn
+    dplyr::select(Reg., WT1.comments2,
+                  matches("_Current"),
+                  # everything()
+                  ) %>%
+    rename_all(~gsub("_Current", "", .))
+
+
+#Merge in the CDEs 
+cols_to_remerge <- setdiff(colnames(merged.updated), colnames(earlier_studies.common))
+earlier_studies.common <- earlier_studies.common %>%
+  left_join(., dplyr::select(merged.updated, Reg., all_of(cols_to_remerge)),
+              by="Reg.") %>%
+  mutate_at(vars(WT1.mutation.comments), ~case_when(
+    is.na(.) ~ WT1.comments2,
+    TRUE ~ .)) %>%
+  select(-WT1.comments2)
+
+
+
+
+  
+options(scipen=999)
+# earlier_studies.common #1068 pts unfiltered
+dim(earlier_studies.common) #82 pts with updates 145
+table(earlier_studies.common$FLT3.ITD.positive.) #46 pos, 36 No
+table(earlier_studies.common$WT1.mutation.) #23 pos, 38 No
+
+
+# table(earlier_studies.common$WT1.mutation.comments)
+# setdiff(colnames(merged.updated), colnames(earlier_studies.common))
+# setdiff(colnames(earlier_studies.common),colnames(merged.updated))
+# table(earlier_studies.common$Reg. %in% check_merged$Reg.) #20 are in the data from COG
+
+
+# earlier_studies.common %>% 
+#   filter(Reg. %in% last_pts_fix)
+```
+
+
+```{r}
+#OK FLT3-ITD, NPM1, and CEBPA consistent with COG
+#These are the two FLT3-ITD patients who change from Unknown to No in check_merged dataframe
+# earlier_studies.common %>%
+#   filter(Reg. %in% c(703342, 68997))
+
+check_merged_v2 <- earlier_studies.common %>%
+  select(Reg., Protocol, matches("^NPM|^CEBPA|^FLT3.[IA]")) %>%
+  inner_join(.,  rename_at(AML.pts.COG_v2, vars(Study:`Allelic.ratio.(previous.data)`), ~paste0(.,"_COG")),
+            by=c("Reg."="Patient.registration.number")) %>%
+  select(colnames(.)[order(colnames(.))])
+
+
+
+# table(check_merged$FLT3.ITD.positive., check_merged$`FLT3.ITD?_COG`)
+# table(check_merged_v2$FLT3.ITD.positive., check_merged_v2$`FLT3.ITD?.(previous.data)_COG`)
+# write.csv(check_merged_v2, "TARGET_AML_Merged_CDEs_check_ITD_NPM_CEBPA_5.20.21.csv", row.names = FALSE)
+```
+
+```{r}
+earlier_studies.uniq <- earlier_studies.cleaned %>% 
+  distinct() %>% 
+  filter(!Reg. %in% merged.updated$Reg.) %>% 
+  mutate(Additional_Pts_Earlier_Studies_2021="Yes") %>% 
+  
+  #Need to add columns identical to  Merged CDEs where possible 
+  mutate(Primary.CNV=case_when(
+      grepl("\\-7,|\\-7\\[", ISCN) ~ "monosomy7",
+      grepl("del\\(5\\)\\(q", ISCN) ~ "del5q",
+      grepl("\\-Y", ISCN) ~ "-Y", 
+      grepl("\\+8", ISCN) & grepl("\\+21", ISCN) ~ "trisomy8/trisomy21",
+      grepl("\\+8", ISCN) ~ "trisomy8", 
+      grepl("\\+21", ISCN) ~ "trisomy21",
+      TRUE ~ "No.Relevant.CNV")) %>%
+  mutate_at(vars(Primary.CNV), ~case_when(
+    ISCN=="Unknown" ~ "Unknown",
+    TRUE ~ .)) %>% 
+  
+  rowwise() %>%
+  mutate(Primary.Fusion=case_when(
+    NUP98.NSD1=="Yes" ~ "NUP98-NSD1",
+    ISCN != "Unknown" ~ classify_ISCN_fusions(ISCN),
+    ISCN == "Unknown" ~ "No cyto/no RNA seq")) %>% 
+  mutate(Additional.Fusions.CNV=case_when(
+      !grepl("No.Relevant.CNV|Unknown|trisomy8", Primary.CNV) & grepl("\\+8", ISCN) ~ "trisomy8",
+      !grepl("No.Relevant.CNV|Unknown|trisomy21", Primary.CNV) & grepl("\\+21", ISCN) ~ "trisomy21",
+      grepl("\\-Y|monosomy7|del5q", Primary.CNV) & grepl("\\+8", ISCN) ~ "trisomy8",
+      grepl("\\-Y|monosomy7|del5q", Primary.CNV) & grepl("\\+21", ISCN) ~ "trisomy21",
+      TRUE ~ "")) %>%
+  ungroup() %>% 
+  mutate_at(vars(Primary.Fusion), ~gsub("^$", "Need.to.complete", .)) %>% 
+  
+  mutate(WT1.mutation.comments=case_when(
+                    WT1.mutation.=="Yes" ~ "Data from Rhonda",
+                    TRUE ~ ""),
+         del5q=case_when(
+                  grepl("del5q",Primary.CNV) | grepl("del5q",Additional.Fusions.CNV) ~ "Yes",
+                  ISCN=="Unknown" ~ "Unknown",
+                  TRUE ~  "No"),
+         del7q=case_when(
+                  grepl("del\\(7\\)\\(q", ISCN) ~ "Yes",
+                  ISCN=="Unknown" ~ "Unknown",
+                  TRUE ~  "No"),
+         monosomy.7=case_when(
+                  grepl("monosomy7",Primary.CNV) | grepl("monosomy7",Additional.Fusions.CNV) ~ "Yes",
+                  ISCN=="Unknown" ~ "Unknown",
+                  TRUE ~  "No"),
+         trisomy.21=case_when(
+                  grepl("trisomy21",Primary.CNV) | grepl("trisomy21",Additional.Fusions.CNV) ~ "Yes",
+                  ISCN=="Unknown" ~ "Unknown",
+                  TRUE ~  "No")) %>% 
+  dplyr::select(Reg.:FLT3.ITD.allelic.ratio, ISCN, Primary.CNV, Additional.Fusions.CNV, everything())
+
+
+dim(earlier_studies.uniq) #1216   21 
+# head(earlier_studies.uniq)
+
+# any(duplicated(earlier_studies.uniq$Reg.)) #OK 
+
+# table(colnames(earlier_studies.uniq) %in% colnames(merged.updated))
+# colnames(earlier_studies.uniq)[!colnames(earlier_studies.uniq) %in% colnames(merged.updated)] #OK
+
+# table(earlier_studies.uniq$NUP98.NSD1)
+# table(earlier_studies.uniq$Protocol)
+# table(earlier_studies.uniq$Primary.Fusion)
+# table(earlier_studies.uniq$WT1.mutation.comments)
+
+
+table(earlier_studies.uniq$FLT3.ITD.positive.) #80 pos
+table(earlier_studies.uniq$WT1.mutation.) #67 pos
+# No    Unknown     Yes
+# 267     882      67
+
+
+# earlier_studies.uniq %>% 
+#   filter(Reg. %in% last_pts_fix)
+```
+
+```{r}
+check_earlier_v2 <- earlier_studies.uniq %>% 
+  filter(Reg. %in% AML.pts.COG_v2$Patient.registration.number) %>% 
+  left_join(., rename_at(AML.pts.COG_v2, vars(Study:`Allelic.ratio.(previous.data)`), ~paste0(.,"_COG")),
+            by=c("Reg."="Patient.registration.number")) %>% 
+  select(colnames(.)[order(colnames(.))]) 
+
+
+# View(check_earlier_v2)
+# table(check_earlier_v2$FLT3.ITD.positive., check_earlier_v2$`FLT3.ITD?.(previous.data)_COG`) #OK
+# table(check_earlier_v2$CEBPA.mutation., check_earlier_v2$`CEBPA.Mutation.(previous.data)_COG`) #OK
+# table(check_earlier_v2$NPM.mutation., check_earlier_v2$`NPM.Mutation.(previous.data)_COG`) #OK
+```
+
+```{r}
+#Some patients we did not have in our dataset as of April 2021
+#but were provided by Rob from COG to show that NPM1 in particular was missing a lot of data. 
+earlier_data_COG <- AML.pts.COG %>% 
+  filter(!Patient.registration.number %in% c(earlier_studies.cleaned$Reg., merged.updated$Reg.)) %>%  
+  # left_join(., select(WT1.data, Reg., WT1.mutation.=wt1_) %>% 
+  #             mutate(WT1.mutation.=gsub(1,"Yes", gsub(0, "No", WT1.mutation.))), 
+  #           by=c("Patient.registration.number"="Reg.")) %>% 
+  rename_at(vars(Patient.registration.number:Allelic.ratio),
+            ~c("Reg.", "Protocol",
+                   "NPM.mutation.", "CEBPA.mutation.",
+                   "FLT3.ITD.positive.", "FLT3.ITD.allelic.ratio")) %>%
+  mutate_at(vars(NPM.mutation.:CEBPA.mutation.), ~gsub("^.$", "Unknown", .)) %>%
+  mutate_at(vars(FLT3.ITD.allelic.ratio), ~gsub("^.$", NA, .)) %>%
+  mutate(Additional_Pts_Earlier_Studies_2021="Yes (patient reg. and mutations from COG)",
+         Primary.Fusion="No cyto/no RNA seq",
+         WT1.mutation.="Unknown")
+
+
+
+table(missing_pts %in% earlier_data_COG$Reg.)
+dim(earlier_data_COG)
+```
+
+
+
+
+# Merge in Earlier Studies
+   
+*Important limitations*
+1. we can identify fusions by karyotype mostly, except for some NUP98-NSD1 molecular assay data. *done*
+2. We need to state how "No"/"Negative" WT1 mutation calls were made - eg RNAseq or PCR assay *done*
+
+
+```{r}
+cols_to_check <- grep("NPM|CEBPA.mut|WT1|c.Kit.Mutation.|^del[57]|trisomy|monosomy.7|Primary.Fusion|Primary.CNV|KMT2A", 
+                      colnames(merged.updated), value=T)
+
+
+table(WT1.data$study)
+```
+
+
+```{r}
+all_patients <- merged.updated %>% 
+  filter(!Reg. %in% earlier_studies.common$Reg.) %>% 
+  
+  #Merge in the earlier studies patients
+  bind_rows(., earlier_studies.uniq) %>% 
+  bind_rows(., earlier_studies.common) %>% 
+  bind_rows(., earlier_data_COG) %>% 
+  
+  
+  #fix the single patient from earlier studies who is in Merged, but not the data Rhonda provided. 
+  #And fix the 412 WT1 mutants data directly from COG who are from earlier datasets. These wont be affected by WGS or transcriptomics data from AAML1031 RNAseq added in the next code chunks
+  mutate_at(vars(NPM.mutation.), ~case_when(
+    Reg. %in% c(744490) ~ "No",
+    TRUE ~ .)) %>% 
+  left_join(., select(WT1.data, Reg., WT1.Mutation_COG=wt1_) %>% 
+              mutate(WT1.Mutation_COG=gsub(1,"Yes", gsub(0, "No", WT1.Mutation_COG))), 
+            by=c("Reg."="Reg.")) %>%
+  mutate_at(vars(WT1.mutation.comments), ~case_when(
+    WT1.mutation.=="Unknown" & grepl("Yes", WT1.Mutation_COG) ~ "Positive added by COG database",
+    WT1.mutation.=="Unknown" & grepl("No", WT1.Mutation_COG) ~ "Negative added by COG database",
+    WT1.mutation.=="No" & grepl("No", WT1.Mutation_COG) ~ "No change by COG database",
+    TRUE ~ .)) %>% 
+  mutate_at(vars(WT1.mutation.), ~case_when(
+    .=="Unknown" & grepl("Yes|No", WT1.Mutation_COG) ~ WT1.Mutation_COG,
+    TRUE ~ .)) %>% 
+  select(-WT1.Mutation_COG) %>% 
+  
+
+  dplyr::select(Reg.:Eligibility_Comments, 
+         all_of(colnames(earlier_studies.uniq)), 
+         all_of(cols_to_check),
+         Additional.Fusions.CNV,
+         Cyto_vs_Seq_Fusions,
+         ScreenedForFusion,
+         Was.sample.sent.for.RBD.sequencing,
+         TARGET_or_1031) %>% 
+  rename_at(vars(matches("c.Kit")), ~gsub("^c.", "", .)) %>% 
+  arrange(desc(FLT3.ITD.positive.)) %>% 
+  mutate_at(vars(Additional_Pts_Earlier_Studies_2021), ~ifelse(is.na(.), "No", .)) %>% 
+
+  #Create a simplified Fusion column including only the most known/relevant mutations
+  #And those that were searched for by Karyotype
+  mutate_at(vars(Primary.Fusion), ~gsub("Nocyto/noRNAseq", "No cyto/no RNA seq",.)) %>% 
+  mutate(Fusion=case_when(
+    grepl("NUP98-NSD1|DEK-NUP214|RUNX1-RUNX1T1|CBFB-MYH11", 
+          Primary.Fusion) ~ Primary.Fusion, #NUP98-KDM5A|CBFA2T3-GLIS2 these cryptics are necessary for this and have underrepresentation in earlier studies w/o transcriptomics
+    grepl("KMT2A-MLLT3$|KMT2A-MLLT10$|KMT2A-MLLT4$|KMT2A-ELL|KMT2A-MLLT1$", Primary.Fusion) ~ Primary.Fusion,
+    grepl("KMT2A-X|KMT2A-", Primary.Fusion) ~ "KMT2A-Other", #classify the remaining KMT2A-types as KMT2A-Other for less common partners
+    TRUE ~ "")) %>% 
+  
+  #Merge Cooperating Mutations with RNAindel 
+  left_join(., dplyr::select(RNAindel, USI, FLT3_Alteration,FLT3.ITD_CICERO, WT1_Mutation:KIT_Mutation,
+                      matches("Mutation_Caller"), matches("_Alteration$")) %>% 
+              rename_at(vars(FLT3_Alteration, WT1_Mutation:KIT_Mutation, 
+                             matches("Mutation_Caller"), matches("_Alteration$")), 
+                        ~paste0(.,"_byRNAseq")), 
+            by="USI") %>%  
+  
+  #Order so that Mutation columns are next to one another 
+  dplyr::select(Reg.,FLT3.ITD.positive., matches("mutation"), everything()) %>%
+  dplyr::select(colnames(.)[order(colnames(.))]) 
+
+
+
+
+
+dim(all_patients) #3635   47
+table(duplicated(all_patients$Reg.)) #OK
+# head(all_patients)
+# table(all_patients$Fusion)
+table(all_patients$Additional_Pts_Earlier_Studies_2021)
+```
+
+  
+
+## Clean the Merged Dataset
+
+```{r}
+WT1.methods <- read.csv("References/WT1_Detection_Methods_toFill.csv") 
+
+  
+WT1.methods.update <-   WT1.methods %>% 
+  filter(grepl("Exon 7", WT1_Detection_Method)) %>% 
+  dplyr::select(-Reg., -WT1.mutation.)
+  
+# any(WT1.methods$USI=="Unknown")
+# table(WT1.methods$WT1_Detection_Method)
+```
+
+```{r}
+inelig_0531 <- AML.pts.COG_v2 %>% 
+  select(Reg.=Patient.registration.number, 
+         biospecimen_banking=`Did.Patient/Parent/Guardian.agree.to.have.patients.specimen.banked.for.use.in.research.to.learn.about,.prevent,.or.treat.cancer?`) %>% 
+  filter(biospecimen_banking=="No")
+
+
+dim(inelig_0531)
+
+elig_earlier <- AML.pts.COG_v2 %>% 
+  select(Reg.=Patient.registration.number, 
+         biospecimen_banking=`Did.Patient/Parent/Guardian.agree.to.have.patients.specimen.banked.for.use.in.research.to.learn.about,.prevent,.or.treat.cancer?`) %>% 
+  filter(biospecimen_banking != "No")
+
+dim(elig_earlier)
+
+
+# table(all_patients$Eligibility_Comments, 
+#       all_patients$Additional_Pts_Earlier_Studies_2021)
+```
+
+
+```{r}
+all_patients.clean <- all_patients %>%
+  
+  #Denote patients who likely need to be updated later for CNVs
+  rowwise() %>% 
+  #Need to include del9q, monosomy5
+  mutate(Tri21_fix=c(grepl("trisomy21",Primary.CNV) | grepl("trisomy21",Additional.Fusions.CNV)) & trisomy.21=="No",
+         Tri8_fix=c(grepl("trisomy8",Primary.CNV) | grepl("trisomy8",Additional.Fusions.CNV)) & trisomy.8=="No",
+         mono7_fix=c(grepl("monosomy7",Primary.CNV) | grepl("monosomy7",Additional.Fusions.CNV)) & monosomy.7=="No",
+         del5q_fix=c(grepl("del5q",Primary.CNV) | grepl("del5q",Additional.Fusions.CNV)) & del5q=="No") %>% 
+  mutate(Needs_Updated_CNV=case_when(
+    any(Tri21_fix | Tri8_fix |  mono7_fix | del5q_fix) ~ "updated",
+   TRUE ~ "no change")) %>%
+  ungroup() %>%
+  
+  
+  #update monosomy7/del7q 
+  #changes to the CNVs will be introduced later
+  # mutate_at(vars(monosomy.7), ~case_when(
+  #    .=="Unknown" & grepl("-7,|-7\\[|-7$", ISCN) ~ "Yes",
+  #    .=="Unknown" & ISCN != "Unknown" ~ "No",
+  #    TRUE ~ . )) %>% 
+  # mutate_at(vars(del7q), ~case_when(
+  #   .=="Unknown" & grepl("del\\(7\\)\\(q", ISCN) ~ "Yes",
+  #   .=="Unknown" & ISCN != "Unknown" ~ "No", 
+  #   TRUE ~ .)) %>% 
+  # mutate(monosomy7_del7q=case_when(
+  #   monosomy.7=="Yes" | del7q=="Yes" ~ "Yes", 
+  #   monosomy.7 != "No" & ISCN=="Unknown" ~ "Unknown",
+  #   TRUE ~ "No")) %>% 
+  
+
+  #Add in UBTF
+  mutate_at(vars(USI), ~ifelse(is.na(.), "Unknown", .)) %>% 
+  mutate(UBTF.ITD.positive.=case_when(
+    USI %in% UBTF$Patient ~ "Yes", 
+    Protocol == "AAML1031" & Was.sample.sent.for.RBD.sequencing == "Yes" ~ "No",
+    TRUE ~ "Unknown")) %>% 
+
+ 
+  #update mutation columns and make them simplified
+  mutate(Updated_Mutation_Group=case_when(
+    WT1_Mutation_byRNAseq == "Yes" & grepl("No|Unknown", WT1.mutation.)  ~ "WT1_byRNAseq",
+    Kit.Mutation.Exon.8=="No" & grepl("Y418del|T417_Y418del", KIT_Alteration_byRNAseq) ~ "KIT_byRNAseq",
+    CEBPA.mutation.=="Yes" ~ "CEBPA", 
+    grepl("KMT2A", Fusion) ~ "KMT2A", 
+    Fusion != "" ~ Fusion,
+    FLT3.ITD.positive. == "Yes" ~ "FLT3-ITD",
+    # CEBPA_Mutation_byRNAseq == "Yes" & grepl("No|Unknown", CEBPA.mutation.) ~ "CEBPA_byRNAseq", #Not including as CEBPA positive
+    # NPM1_Mutation_byRNAseq == "Yes" &  grepl("No|Unknown", NPM.mutation.)  ~ "NPM1_byRNAseq", #Not including NPM1 postiives
+    TRUE ~ "OtherAML" )) %>% 
+  
+  #Update the Mutation Columns 
+  mutate(WT1.mutation_v2=case_when(
+    WT1_Mutation_byRNAseq == "Yes" & WT1.mutation. == "No" ~ "Yes",
+    !is.na(WT1_Mutation_byRNAseq) & WT1.mutation. == "Unknown" ~ WT1_Mutation_byRNAseq,
+    USI %in% HasRNAseqMuts & WT1.mutation. == "Unknown" ~ "No",  #these patients have been screened for SNVs/indels
+    WT1.mutation.=="Unknown" | is.na(WT1.mutation.) ~ "Unknown", 
+    TRUE ~ WT1.mutation.)) %>%
+  
+  #Y418del, T417_Y418del 
+  #Only Update the exon8 variants identified N=2
+  mutate(Kit.Mutation.Exon.8_v2=case_when(
+    Kit.Mutation.Exon.8=="No" & grepl("Y418del|T417_Y418del", KIT_Alteration_byRNAseq) ~ "Yes",
+    KIT_Mutation_byRNAseq == "No" & Kit.Mutation.Exon.8 =="Unknown" ~ KIT_Mutation_byRNAseq,
+    USI %in% HasRNAseqMuts & Kit.Mutation.Exon.8 == "Unknown" ~ "No", #these patients have been screened for SNVs/indels
+    Kit.Mutation.Exon.8=="Unknown" | is.na(Kit.Mutation.Exon.8) ~ "Unknown",
+    TRUE ~ Kit.Mutation.Exon.8)) %>%
+  #Update Kit exon17 for unknowns
+  mutate(Kit.Mutation.Exon.17_v2=case_when(
+    KIT_Mutation_byRNAseq == "No" & Kit.Mutation.Exon.17=="Unknown" ~ KIT_Mutation_byRNAseq,
+    USI %in% HasRNAseqMuts & Kit.Mutation.Exon.17 == "Unknown" ~ "No", #these patients have been screened for SNVs/indels
+    Kit.Mutation.Exon.17=="Unknown" | is.na(Kit.Mutation.Exon.17) ~ "Unknown",
+    TRUE ~ Kit.Mutation.Exon.17)) %>%
+  
+  
+  # mutate(KIT.mutation_v2=case_when(
+  #   Kit.Mutation.Exon.17=="Yes" | Kit.Mutation.Exon.8=="Yes" ~ "Yes", 
+  #   !is.na(KIT_Mutation_byRNAseq) & Kit.Mutation.Exon.17=="Unknown" ~ KIT_Mutation_byRNAseq,
+  #    USI %in% HasRNAseqMuts & Kit.Mutation.Exon.17 == "Unknown" ~ "No",
+  #   Kit.Mutation.Exon.17=="Unknown" | is.na(Kit.Mutation.Exon.17) ~ "Unknown",
+  #   TRUE ~ "No")) %>% 
+  
+  #The NPM1 mutations do not fall with in Exon 11, which is the clinically prognostic variant. so keep as negative. 
+  # mutate(NPM.mutation_v2=case_when(
+  #   NPM1_Mutation_byRNAseq == "Yes" & NPM.mutation.=="No" ~ "Yes",
+  #   !is.na(NPM1_Mutation_byRNAseq) & NPM.mutation.=="Unknown" ~ NPM1_Mutation_byRNAseq,
+  #    USI %in% HasRNAseqMuts & NPM.mutation. == "Unknown" ~ "No",
+  #   NPM.mutation.=="Unknown" | is.na(NPM.mutation.) ~ "Unknown", 
+  #   TRUE ~ NPM.mutation.)) %>% 
+  
+  #CEBPA N-term only and 2 bZIP domain SNVs, which are not inline with the clinically relevant CEBPA mutations
+  #So dont consider positive
+  # mutate(CEBPA.mutation_v2=case_when(
+  #   CEBPA_Mutation_byRNAseq == "Yes" & CEBPA.mutation.=="No" ~ "Yes",
+  #   !is.na(CEBPA_Mutation_byRNAseq) & CEBPA.mutation.=="Unknown" ~ CEBPA_Mutation_byRNAseq,
+  #   CEBPA.mutation.=="Unknown" | is.na(CEBPA.mutation.) ~ "Unknown", 
+  #   TRUE ~ CEBPA.mutation.)) %>% 
+
+  
+  #Cretae a column with the WT1 detection Methods
+  mutate_at(vars(TARGET_or_1031), ~ifelse(is.na(.), Protocol, .)) %>% 
+  left_join(., dplyr::select(TARGET.CDEs,USI, WGS, Part.of.684.cohort, TARGET.cohort),
+            by="USI") %>% 
+  left_join(., WT1.methods.update, by="USI") %>% 
+  mutate_at(vars(WT1_Detection_Method), ~case_when(
+    !is.na(.) ~ gsub("Exon 7 GM/Seq screen", "PCR assay: exon 7 screen", gsub("Exon 7,8,9 screen", "PCR assay: exon 7,8,9 screen", .)),
+    WT1.mutation_v2 == "Unknown" ~ "No WT1 Data", 
+    (WT1_Mutation_byRNAseq == "Yes" & WT1.mutation. == "No") | (!is.na(WT1_Mutation_byRNAseq) & WT1.mutation. == "Unknown") ~ "RNAseq",
+      
+    #1031 specifics 
+    USI %in% WT1.byWGS & USI %in% c(RNAindel$USI, WT1.byTargAlign, HasRNAseqMuts) ~ "WGS and RNAseq",
+    USI %in% WT1.byWGS & !USI %in% c(RNAindel$USI, WT1.byTargAlign, HasRNAseqMuts) ~ "WGS",
+    USI %in% WT1.byPCR & USI %in% c(RNAindel$USI, WT1.byTargAlign, HasRNAseqMuts) ~ "PCR assay: exons 7 and 9 and RNAseq", #should update this to be more specific 
+    USI %in% WT1.byPCR & !USI %in% c(RNAindel$USI, WT1.byTargAlign, HasRNAseqMuts) ~ "PCR assay: exons 7 and 9",
+    Protocol == "AAML1031" & USI %in% c(RNAindel$USI, WT1.byTargAlign, HasRNAseqMuts) ~ "RNAseq",
+    Protocol == "AAML1031" & USI %in% c(HasRNAseqMuts, sample_info$USI) ~ "RNAseq", #two additional 1031s that were difficult to classify cuz not in RNAindel but have RNAseq data
+    Protocol == "AAML1031" & grepl("Yes|No", WT1.mutation_v2) ~ "PCR assay: exons 7 and 9", #there were 58 pts in the official CDEs who were NA for USIs and did not have Reg#s in the file... these must be them?
+    
+    #TARGET Cohort specifc
+    TARGET_or_1031 == "TARGET" & USI %in% c(RNAindel$USI, HasRNAseqMuts) & (grepl("CGI", WGS) | grepl("part of 684 cohort", Part.of.684.cohort)) ~ "WGS/TCS and RNAseq", 
+    TARGET_or_1031 == "TARGET" & !USI %in% c(RNAindel$USI,HasRNAseqMuts) & (grepl("CGI", WGS) | grepl("part of 684 cohort", Part.of.684.cohort)) ~ "WGS/TCS", 
+    
+    #Remaining 0531/03p1/2961
+    Protocol == "AAML0531" & USI %in% c(RNAindel$USI,HasRNAseqMuts)  ~ "RNAseq",
+    Protocol == "AAML0531" & !USI %in% c(RNAindel$USI,HasRNAseqMuts)  ~ "PCR assay: exon 7 screen",
+    Protocol == "CCG-2961"  ~ "PCR assay: exon 7,8,9 screen",
+    Protocol == "AAML03P1"  ~ "PCR assay: exon 7,8,9 screen",
+    
+    #Update remaining Patients who have RNAindel/BCCA SNVs
+    USI %in% c(RNAindel$USI, HasRNAseqMuts) ~ "RNAseq",
+    TRUE ~ .)) %>%
+  
+  mutate_at(vars(WT1_Detection_Method), ~case_when(
+    #These patients have RNAseq but we know they were not detected as positive > 7hits (a few had <7 hits)
+    Reg. %in% c(834225, 852213, 820453, 832400, 832953, 
+                833184, 837392, 838471, 843976, 847890,
+                853577, 854547) ~ "WGS",
+    TRUE ~ .)) %>% 
+  
+  mutate_at(vars(WT1.mutation.comments), ~case_when(
+        WT1_Mutation_byRNAseq == "Yes" & WT1.mutation. == "No" ~ "Positive added from BCCA and St.Jude transcriptome SNV/indel calls",
+        is.na(.) & WT1.mutation_v2 == "Yes" & WT1.mutation. == WT1.mutation_v2 ~ "No change",
+         WT1.mutation.comments=="Data from Rhonda" & WT1.mutation_v2 == "Yes" ~ paste0("Positive added by ", WT1_Detection_Method),
+        # WT1.mutation_v2 == "Yes" ~ ., 
+        # is.na(.) & WT1.mutation.=="Unknown" & WT1.mutation_v2=="No" ~ paste0("Negative added by ", WT1_Detection_Method),
+        grepl("No|Unknown", WT1.mutation_v2) ~ "",
+        TRUE ~ . )) %>% 
+  mutate_at(vars(WT1.mutation.comments), ~case_when(
+       Reg. %in% c(839649, 818770, 835259) ~ "Positive missed during WGS data merges, but found by RNAseq",
+       TRUE ~ .)) %>% 
+  
+  #Cleanup WGS/TCS data availabliltiy
+  mutate_at(vars(WGS), ~case_when(
+    USI %in% WT1.byWGS ~ "St. Jude WGS",
+    is.na(.) ~ "", 
+    TRUE ~ .)) %>% 
+  mutate_at(vars(Part.of.684.cohort:TARGET.cohort), ~ifelse(is.na(.), "", .)) %>% 
+  mutate_at(vars(Additional.Fusions.CNV), ~case_when(
+    is.na(.) ~ "",
+    TRUE ~ .)) %>% 
+  
+  #Clean up the CCG-2961 Data
+  mutate_at(vars(Was.sample.sent.for.RBD.sequencing), ~ifelse(grepl("Yes",Additional_Pts_Earlier_Studies_2021), "No", .)) %>% 
+  mutate_at(vars(Cyto_vs_Seq_Fusions), ~case_when(
+    grepl("Yes",Additional_Pts_Earlier_Studies_2021) & Primary.Fusion=="No cyto/no RNA seq" ~ Primary.Fusion,
+    grepl("Yes",Additional_Pts_Earlier_Studies_2021) & Primary.Fusion=="NUP98-NSD1" ~ "qPCR only", 
+    grepl("Yes",Additional_Pts_Earlier_Studies_2021) & is.na(.) ~ "cyto only; no RNA seq avail",
+    Primary.Fusion=="NUP98-NSD1" & grepl("cyto only", .) & Was.sample.sent.for.RBD.sequencing=="Yes" ~ "RNA seq only",
+    grepl("RNA seq only; no cyto avail", .) & grepl("^[0-9]", ISCN) ~ "RNA seq only",
+    TRUE ~ .)) %>% 
+  
+  #Update screened for fusion if the patient has ISCN or RNAseq  == "Yes"
+  mutate_at(vars(ScreenedForFusion), ~case_when(
+    (is.na(.) | .=="No") & USI %in% sample_info$USI ~ "Yes", #has RNAseq, so fusion data has been examined
+    (is.na(.) | .=="No") & grepl("part of 684 cohort", Part.of.684.cohort) ~ "Yes", #WGS/TCS
+    (is.na(.) | .=="No") & grepl("Discovery|Other|Validation", TARGET.cohort) ~ "Yes", #ployA RNAseq
+    (is.na(.) | .=="No") & ISCN != "Unknown" ~ "Yes",
+    # grepl("Need.to.complete", Primary.Fusion) ~ "Need.to.complete",
+    is.na(.) & ISCN == "Unknown" ~ "No",
+    is.na(.) & grepl("Yes",Additional_Pts_Earlier_Studies_2021) ~ "Unknown",
+    TRUE ~ .)) %>% 
+  
+  #update eligibility 
+  mutate_at(vars(Eligibility), ~case_when(
+    Reg. %in% inelig_0531$Reg. ~ "AAML0531: did not consent to banked specimen use",
+    Reg. %in% elig_earlier$Reg. ~ "eligible",
+    Reg. %in% WT1.data$Reg. ~ "eligible",
+    TRUE ~ gsub(" {1,}$","",.))) %>%
+   mutate_at(vars(Eligibility_Comments), ~case_when(
+    Reg. %in% inelig_0531$Reg. ~ "remove",
+    Reg. %in% elig_earlier$Reg. ~ "eligible",
+    Reg. %in% WT1.data$Reg. ~ "eligible",
+    TRUE ~ gsub(" {1,}$","",.))) %>%
+  
+  
+  #re-Order the columns
+  dplyr::select(Reg.,USI, SJ_ID, Protocol,
+                Eligibility:Eligibility_Comments,
+         Additional_Pts_Earlier_Studies_2021, 
+         WGS, Part.of.684.cohort, TARGET.cohort,
+         FLT3.ITD.positive.,  FLT3.ITD.allelic.ratio, 
+         FLT3.ITD_CICERO, FLT3_Mutation_byRNAseq,FLT3_Alteration_byRNAseq,
+        Primary.Fusion, Primary.CNV, Additional.Fusions.CNV,
+        Cyto_vs_Seq_Fusions,ScreenedForFusion, Updated_Mutation_Group, 
+         ISCN, Fusion,
+         everything(),
+        -DEK.NUP214, -NUP98.NSD1) 
+
+
+
+# all_patients.clean
+dim(all_patients.clean) #3635   59
+table(all_patients.clean$FLT3.ITD.positive.) #517 positive patients 
+# table(all_patients.clean$WT1.mutation_v2) #326 positive 
+
+
+
+# table(all_patients.clean$ScreenedForFusion) 
+# table(all_patients.clean$Part.of.684.cohort)
+# table(all_patients.clean$Was.sample.sent.for.RBD.sequencing)
+# table(all_patients.clean$WT1_Detection_Method)
+
+
+# table(all_patients.clean$Eligibility,
+#       all_patients.clean$Additional_Pts_Earlier_Studies_2021)
+
+# table(all_patients.clean$Reg. %in% AML.pts.COG_v2$Patient.registration.number) #OK
+```
+
+
+
+
+
+
+### Double check Cleand Data to COG data 
+
+```{r}
+#From Rob 5/20/21
+#Reg# 749858 (AAML03P1) – this patient is not in the listing but I have for NPM- negative, CEBPA-negative, ITD-positive with AR=0.74, WT1-negative. #OKAY 
+#Reg# 701385 (2961) – this patient is listed as having CEBPA -negative, WT1-unknown, but I have CEBPA-positive and WT1-negative. 
+
+#701385 This was the patient with N-term only CEBPA mutation. 
+last_pts_fix <- c(749858,701385)
+
+filter(all_patients.clean, Reg. %in% last_pts_fix) %>% 
+  select(Reg., matches("NPM\\.|WT1\\.|FLT3.ITD|CEBPA\\."))
+```
+
+
+
+```{r}
+all_patients.clean %>% 
+  filter(Reg. %in% AML.pts.COG_v2$Patient.registration.number) %>% 
+  select(Reg., CEBPA.mutation., NPM.mutation., WT1.mutation., FLT3.ITD.positive.) %>% 
+  gather(Mutation, Status,CEBPA.mutation.:FLT3.ITD.positive.)  %>% 
+  group_by(Mutation, Status) %>% 
+  count() %>% 
+  spread(Status, n)
+```
+
+
+```{r}
+AML.pts.COG_v2 %>% 
+  gather(Mutation, Status, `NPM.Mutation.(previous.data)`, `CEBPA.Mutation.(previous.data)`, `FLT3.ITD?.(previous.data)`) %>% 
+  select(Mutation, Status) %>% 
+  group_by(Mutation, Status) %>% 
+  count() %>% 
+  spread(Status, n)
+```
+
+```{r}
+all_patients.clean %>% 
+  filter(Reg. %in% WT1.data$Reg.) %>% 
+  select(Reg., WT1.mutation.) %>% 
+  group_by(WT1.mutation.) %>% 
+  count() %>% 
+  spread(WT1.mutation., n)
+
+WT1.data %>% 
+  group_by(wt1_) %>% 
+  count() %>% 
+  spread(wt1_, n)
+```
+
+
+
+  #To Fix CNV vs binary columns 
+  rowwise() %>% 
+  mutate(Tri21_fix=c(grepl("trisomy21",Primary.CNV) | grepl("trisomy21",Additional.Fusions.CNV)) & trisomy.21=="No",
+         Tri8_fix=c(grepl("trisomy8",Primary.CNV) | grepl("trisomy8",Additional.Fusions.CNV)) & trisomy.8=="No",
+         mono7_fix=c(grepl("monosomy7",Primary.CNV) | grepl("monosomy7",Additional.Fusions.CNV)) & monosomy.7=="No",
+         del5q_fix=c(grepl("del5q",Primary.CNV) | grepl("del5q",Additional.Fusions.CNV)) & del5q=="No") %>% 
+  mutate(Updated_CNV=case_when(
+    any(Tri21_fix | Tri8_fix |  mono7_fix | del5q_fix) ~ "updated",
+   TRUE ~ "no change")) %>%
+  ungroup() %>% 
+  
+  mutate(trisomy.21=ifelse(Tri21_fix, "Yes", trisomy.21),
+         trisomy.8=ifelse(Tri8_fix, "Yes", trisomy.8),
+         monosomy.7=ifelse(mono7_fix, "Yes", monosomy.7),
+         del5q=ifelse(del5q_fix, "Yes", del5q)) %>%
+  mutate(trisomy.8=case_when(
+                         grepl("PARMPM", USI) ~ "No",
+                         TRUE ~ trisomy.8),
+         del7q=case_when(
+                           grepl("PAXBAV", USI) ~ "No", 
+                           TRUE ~ del7q)) %>% 
+
+
+# FLT3-ITD to Validate 
+
+```{r}
+temp <- all_patients.clean %>% 
+  dplyr::select(USI, Protocol, matches("FLT3")) %>% 
+  filter(FLT3_Mutation_byRNAseq=="Yes")
+
+dim(temp)
+# table(temp$FLT3_Alteration_byRNAseq)
+# temp
+
+# table(all_patients.clean$FLT3_Mutation_byRNAseq)
+```
+
+```{r}
+#Send to Tiffany for Molecular testing of FLT3-ITD
+toValidate <- all_patients.clean %>%
+  filter(FLT3.ITD.positive.=="No" & FLT3.ITD_CICERO=="Yes") %>%
+  inner_join(., dplyr::select(RNAindel, USI, matches("CICERO"), -FLT3.ITD_CICERO), by="USI") %>% 
+  dplyr::select(Reg., USI, Protocol,FLT3.ITD.positive.:FLT3.ITD_CICERO, CICERO_PosA, CICERO_PosB)
+
+# toValidate
+# write.csv(toValidate, "TARGET_AAMLL1031_To_Screen_For_FLT3.ITD_4.9.21_v2.csv", row.names = F)
+
+
+# RNAindel %>%
+#   filter(USI %in% toValidate$USI) %>%
+#   select(USI, Patient_ID, matches("CICERO"))
+```
+
+```{r}
+refseq <- read.csv(file.path(PROJHOME, "/2018.09.11_Combine_Fusion_Calls/Fusion_Reference/defaultIsoform.human.txt"), sep="\t", header = FALSE) 
+  # filter(V2=="NM_004119")
+
+# dim(refseq)
+# head(refseq)
+```
+
+RefSeq mRNA ID
+NM_004119
+
+Transcript stable ID	
+ENST00000241453	    
+
+Gene stable ID
+ENSG00000122025	
+
+Gene name
+FLT3
+
+```{r message=FALSE}
+Grch37.txdb <- AnnotationDbi::loadDb(file.path(PROJHOME,
+                                      "0000.00.02_Reference_GeneInfo/SQL/GRCh37-lite_Ensembl_v69_TxDB.sqlite"))
+# Grch37.txdb
+```
+
+```{r}
+exons <- GenomicFeatures::exonsBy(Grch37.txdb, by="tx", use.names=TRUE)
+
+flt3_exons <- exons[["ENST00000241453"]]
+# flt3_exons
+```
+
+```{r}
+cicero_raw <- openxlsx::read.xlsx("Mutation_Data/TARGET_AML_CICERO_FLT3-ITD_Summarized_Calls_04.12.2021.xlsx", sheet=2) %>% 
+  mutate(USI=str_split_fixed(Patient,pattern = "-", n=5)[,3]) %>% 
+  filter(USI %in% toValidate$USI) %>% 
+  filter(grepl("09A|03A", Patient)) %>% 
+  group_by(Patient) %>% 
+  mutate(ID=paste(Patient,1:n(), sep="_")) %>% 
+  ungroup() %>% 
+  dplyr::select(ID, everything())
+
+
+
+# head(cicero_raw)
+dim(cicero_raw)
+# View(cicero_raw)
+```
+
+```{r}
+n <- nrow(cicero_raw)
+bed <- data.frame(chrom=cicero_raw$ChrA,
+                  chromStart=cicero_raw$PosA,
+                  chromEnd=cicero_raw$PosB,
+                  name=cicero_raw$ID,
+                  score=rep(0,n),
+                  strand=cicero_raw$OrientA,
+                  thickStart=cicero_raw$PosA,
+                  thickEnd=cicero_raw$PosB,
+                  itemRgb=paste(col2rgb("grey"), collapse=",")) 
+                  # blockCount=rep(0, n),
+                  # blockSizes=rep(0, n),
+                  # blockStarts=rep(".", n))
+
+# bed
+options(scipen=999)
+# trackList <- c(track name="Del(13) Abnormalities" description="deletions in Chr13 by Karyotype" visibility=2 itemRgb="On")
+# write.table(bed,"TARGET_AML_CICERO_FLT3-ITD_toValidate.bed", quote=F, sep="\t", row.names=F, col.names=F)
+```
+
+```{r}
+chr <- "13"
+flt3.itd.gr <- GRanges(seqnames = S4Vectors::Rle(chr),
+                       ranges = IRanges::IRanges(start=cicero_raw$PosA,
+                                                 end=cicero_raw$PosB, 
+                                                 # width=1,
+                                                 names=cicero_raw$ID),
+                       strand="-")
+
+flt3.itd.gr
+```
+
+```{r}
+itd.exons <- lapply(1:length(flt3.itd.gr), function(i){
+   IRanges::subsetByOverlaps(flt3_exons, flt3.itd.gr[i])
+})
+names(itd.exons) <- names(flt3.itd.gr)
+head(itd.exons)
+```
+
+
+```{r}
+flt3_itd_exons.df <- lapply(names(itd.exons), function(x){
+  gr <- itd.exons[[x]]
+  df <- as.data.frame(gr) %>% 
+    mutate(Patient=x,
+           gene="FLT3",
+           RefSeq.mRNA.ID="NM_004119",
+           Transcript.ID="ENST00000241453") %>% 
+    # dplyr::filter(exon_rank==min(exon_rank)) %>%  #cuz its on the - strand, so techinically PosB is the start of the ITD
+    dplyr::select(Patient, gene , chromosome=seqnames, ref.exon.start=start, strand, itd.start_exon.rank=exon_rank, RefSeq.mRNA.ID, Transcript.ID)
+}) %>% 
+  bind_rows()
+
+flt3_itd_exons.df <- flt3_itd_exons.df %>% 
+  group_by(Patient) %>% 
+  mutate(Keep=itd.start_exon.rank==min(itd.start_exon.rank)) %>% 
+  ungroup() %>%
+  filter(Keep) %>% 
+  inner_join(., dplyr::select(cicero_raw, ID, matches("^(Pos|Chr|Orient|NumReads)[AB]")), 
+             by=c("Patient"="ID"))  %>% 
+  separate(Patient, into=c("Patient", "FLT3.ITD_Contig_ID"), sep="_")
+
+
+
+# flt3_itd_exons.df
+# write.csv(flt3_itd_exons.df, "TARGET_AML_CICERO_FLT3-ITD_toValidate_exon_ranks.csv", row.names = FALSE)
+```
+
+
+
+# Examine the updated mutations
+
+```{r}
+table(all_patients.clean$Updated_Mutation_Group)
+length(unique(all_patients.clean$Updated_Mutation_Group)) #12 groups
+```
+
+
+## WT1
+
+From Rob/COG:
+
+These 78 patients are from all 4 studies (n=23 CCG-2961, n=5 AAML03P1, n=43 AAML0531,  n=7 AAML1031). 
+
+Rhonda has provided me a AAML1031 file in December and data conflicts from that file as well (see attached).  For example, these n=7 1031 patients (USI: PAUVCL, PAUVEF, PAWEVC, PAWYVR, PAXBZH, PAXHCC, PAXLFG)  are the ones with differing results for WT1.
+
+I also find n=13 that are now negative, but were previously positive. N=12 of these patients are from AAML1031 (USI: PAUVAT, PAVRWU,  PAVSVU, PAVTFI, PAVVAT, PAWAMM, PAWCJK, PAWLYM, PAWUTL, PAXCFI, PAXEPC, PAXGGM). 
+
+
+```{r}
+#OK these 12 were missed during the dec 2020 updates to the CDEs using the WGS. 
+#So we need t
+bad.1031s <- c("PAUVAT", "PAVRWU",  "PAVSVU", "PAVTFI", "PAVVAT", "PAWAMM", "PAWCJK", "PAWLYM", "PAWUTL", "PAXCFI", "PAXEPC", "PAXGGM")
+
+changed.1031s <- c("PAUVCL", "PAUVEF", "PAWEVC", "PAWYVR", "PAXBZH", "PAXHCC", "PAXLFG")
+
+# table(bad.1031s %in% merged.updated$USI)
+# table(bad.1031s %in% all_patients.clean$USI)
+# 
+# table(changed.1031s %in% merged.updated$USI)
+# table(changed.1031s %in% all_patients.clean$USI)
+```
+
+```{r}
+#Why are 7 WT1 patients switched from No to Yes? 
+#These are TARGET Cohort so should have been pretty stable. 
+#Checked with Rhonda - there were earlier studies by Phoenix who ran PCR assays for indels in exon 7,8,9 and needed to be included in the Merged CDEs and TARGET CDEs
+
+# earlier_studies.common %>% 
+#   select(Reg.,  TARGET_or_1031, Protocol, matches("WT1"), 
+#          -WT1.mutation.) %>% 
+#   write.csv(., "TARGET_AML_WT1_Mutation_changes.csv", row.names = FALSE)
+```
+
+```{r}
+table(all_patients$WT1.mutation.) #Addition of 24 WT1 mutations 
+table(all_patients.clean$WT1.mutation.)
+table(all_patients.clean$WT1.mutation_v2)
+table(all_patients.clean$WT1_Mutation_byRNAseq)
+```
+
+```{r}
+sent_to_cog <- read.csv("00_Archive/TARGET_AML_CCG2961_03P1_0531_1031_forFLT3_Manuscript_CDEs_4.23.21.csv")
+dim(sent_to_cog)
+```
+
+```{r}
+WT1.check <- all_patients.clean %>% 
+  dplyr::select(Reg.,USI, Protocol, TARGET_or_1031,Fusion, matches("WT1")) %>% 
+  left_join(., select(sent_to_cog, Reg., WT1.mutation_4.23.21_Version=WT1.mutation.),
+            by="Reg.") %>% 
+  mutate(Diff=(WT1.mutation.!=WT1.mutation_v2) | (WT1.mutation_4.23.21_Version != WT1.mutation_v2),
+         Eligibility=ifelse(Reg. %in% inelig, "remove","OK")) %>%
+  arrange(desc(WT1.mutation_v2),WT1.mutation.comments, TARGET_or_1031, Protocol, WT1_Mutation_Caller_byRNAseq) %>%
+  filter(Diff | WT1.mutation_v2=="Yes") %>% 
+  filter(Eligibility=="OK")
+
+
+dim(WT1.check) 
+# WT1.check
+
+
+table(WT1.check$WT1.mutation.comments)
+table(WT1.check$WT1.mutation_v2)
+table(WT1.check$WT1.mutation_v2,
+      WT1.check$Eligibility)
+
+
+
+# write.csv(WT1.check, "WT1_Validation/TARGET_AML_WT1_check_05.11.21.csv", row.names = F)
+```
+
+
+```{r}
+# Only 3/15 had positive RNAindel calls 
+t <- WT1.check %>% 
+  filter(grepl("Positive missed during WGS data merges", WT1.mutation.comments))
+
+
+# View(t)
+
+# filter(RNAindel, USI %in% t$USI) %>% 
+#   arrange(desc(WT1_Mutation)) %>% 
+#   select(USI, matches("WT1"))
+
+
+filter(RNAindel_full, USI %in% t$USI) %>%
+  arrange(desc(WT1_Mutation)) %>%
+  select(USI, matches("WT1"), everything()) %>% 
+  arrange(USI)
+
+
+filter(WGS.1031, USI %in% t$USI) %>%
+  filter(Gene=="WT1") %>% 
+  select(USI, matches("WT1"), everything()) %>% 
+  arrange(USI)
+
+
+
+filter(WGS.1031, USI %in% t$USI) %>%
+  filter(Gene=="WT1") %>% 
+  select(USI, matches("WT1"), everything()) %>% 
+  arrange(USI)
+
+
+
+filter(official.addReg, USI %in% t$USI) %>%
+  # filter(Gene=="WT1") %>% 
+  select(USI, matches("WT1"), everything()) %>% 
+  arrange(USI)
+
+```
+
+```{r}
+official.addReg %>% 
+  filter(USI %in% bad.1031s) %>% 
+  arrange(Reg.)
+
+filter(merged.updated, USI %in% bad.1031s) %>% 
+  select(1:5, matches("WT1"), everything()) %>% 
+  arrange(Reg.)
+
+
+filter(all_patients.clean, USI %in% bad.1031s) %>%
+  select(1:5, matches("WT1"), everything()) %>%
+  arrange(Reg.)
+
+
+filter(WT1.check, USI %in% bad.1031s) %>%
+  select(1:5, matches("WT1"), everything()) %>%
+  arrange(Reg.)
+```
+
+
+```{r}
+table(all_patients.clean$WT1.mutation.comments)
+# table(all_patients.clean$WT1_Detection_Method)
+# table(WT1.methods$WT1_Detection_Method)
+```
+
+
+### GRanges Refs
+
+Gene stable ID			
+ENSG00000184937	
+
+Transcript stable ID
+ENST00000452863	
+
+Gene name
+WT1	
+
+RefSeq mRNA ID
+NM_024426.6
+
+```{r}
+# refseq <- read.csv(file.path(PROJHOME, "/2018.09.11_Combine_Fusion_Calls/Fusion_Reference/defaultIsoform.human.txt"), sep="\t", header = FALSE) 
+# filter(refseq, V1=="WT1")
+
+# dim(refseq)
+# head(refseq)
+```
+
+```{r message=FALSE}
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+GRCh38.txdb <-  TxDb.Hsapiens.UCSC.hg38.knownGene
+# GRCh38.txdb
+
+exons <- GenomicFeatures::exonsBy(GRCh38.txdb, by="tx", use.names=TRUE)
+
+wt1_exons <- exons[[grep("ENST00000452863", names(exons))]]
+wt1_exons
+```
+
+
+
+### Higher Confidence >7 hits
+
+```{r}
+WT1.new <- filter(WT1.check, WT1.mutation_v2=="Yes")
+
+WT1_Coords <- raw_RNAindel %>% 
+  filter(USI %in% WT1.new$USI) %>% 
+  filter(annovar_sj_gene=="WT1") %>% 
+  group_by(Sample) %>% 
+  mutate(ID=paste(USI, 1:n(), sep="_")) %>% 
+  ungroup() %>% 
+  dplyr::select(ID, everything()) 
+
+#Variante was not in the protien changes??
+oddball <- filter(WT1_Coords, USI=="PAWLAN", annovar_sj_gene=="WT1") %>% 
+  separate(annovar_region_gene, into=paste0("V",1:10), sep=",", remove = F) %>% 
+  dplyr::select(Sample, WT1.NM_024426.Exon=V1, WT1.NM_000378.Exon=V3, everything()) %>%  
+  mutate_at(vars(matches("WT1")), ~gsub("^.+(exon[0-9]{1,}):.+", "\\1", .)) %>% 
+   dplyr::select(Sample, ID:ALT_CNT, WT1.NM_024426.Exon,WT1.NM_000378.Exon,  annovar_exonic_function_gene, annovar_region_gene)
+  
+# oddball
+
+
+WT1_Coords <- WT1_Coords %>% 
+  filter(USI!="PAWLAN") %>% 
+  separate(annovar_exonic_function_gene, into=paste0("WT1_Transcript_", 1:10), 
+           sep=",", fill="right", extra="merge", remove = F) %>% 
+  dplyr::select(ID:ALT_CNT,matches("WT1_Transcript_"),annovar_exonic_function_gene, annovar_region_gene) %>% 
+  dplyr::select(ID:ALT_CNT, WT1.NM_000378=WT1_Transcript_1, WT1.NM_024426=WT1_Transcript_5, annovar_exonic_function_gene, annovar_region_gene) %>% 
+  rowwise() %>% 
+  mutate_at(vars(WT1.NM_000378,WT1.NM_024426), ~paste(str_split_fixed(., pattern=":", n=5)[,c(3,5)], collapse = "; ")) %>% 
+  separate(WT1.NM_000378,into=c("WT1.NM_000378.Exon","WT1.NM_000378.ProteinChange"), sep="; ") %>% 
+  separate(WT1.NM_024426,into=c("WT1.NM_024426.Exon","WT1.NM_024426.ProteinChange"), sep="; ") %>% 
+  ungroup() %>% 
+  bind_rows(., oddball)
+
+# View(WT1_Coords)
+dim(WT1_Coords)
+
+# table(WT1.new$WT1_Mutation_Caller_byRNAseq) #Just use RNAindel 
+
+
+# write.csv(WT1_Coords,"WT1_Validation/TARGET_AML_RNAindel_GRCh38_WT1_Exons.csv", row.names = FALSE)
+# table(WT1_Coords$WT1.NM_000378.Exon)
+table(WT1_Coords$WT1.NM_024426.Exon)
+```
+
+```{r}
+n <- nrow(WT1_Coords)
+wt1.bed <- data.frame(chrom=WT1_Coords$Chr,
+                  chromStart=WT1_Coords$Pos,
+                  chromEnd=WT1_Coords$Pos,
+                  name=WT1_Coords$ID,
+                  score=rep(0,n),
+                  strand="-",
+                  thickStart=WT1_Coords$Pos,
+                  thickEnd=WT1_Coords$Pos,
+                  itemRgb=paste(col2rgb("grey"), collapse=",")) 
+                  # blockCount=rep(0, n),
+                  # blockSizes=rep(0, n),
+                  # blockStarts=rep(".", n))
+
+wt1.bed
+options(scipen=999)
+# trackList <- c(track name="Del(13) Abnormalities" description="deletions in Chr13 by Karyotype" visibility=2 itemRgb="On")
+# write.table(wt1.bed,"TARGET_AML_RNAindel_WT1_toValidate.bed", quote=F, sep="\t", row.names=F, col.names=F)
+```
+
+```{r}
+chr <- unique(WT1_Coords$Chr)
+wt1.gr <- GRanges(seqnames = S4Vectors::Rle(chr),
+                       ranges = IRanges::IRanges(start=WT1_Coords$Pos,
+                                                 end=WT1_Coords$Pos, 
+                                                 # width=1,
+                                                 names=WT1_Coords$ID),
+                       strand="-")
+
+wt1.gr
+```
+
+```{r}
+wt1.exons <- lapply(1:length(wt1.gr), function(i){
+   IRanges::subsetByOverlaps(wt1_exons, wt1.gr[i])
+})
+names(wt1.exons) <- names(wt1.gr)
+head(wt1.exons)
+```
+
+```{r}
+wt1.exons.df <- lapply(names(wt1.exons), function(x){
+  gr <- wt1.exons[[x]]
+  df <- as.data.frame(gr) %>% 
+    mutate(Patient=x,
+           gene="WT1",
+           RefSeq.mRNA.ID="NM_000378",
+           Transcript.ID="ENST00000452863") %>% 
+    # dplyr::filter(exon_rank==min(exon_rank)) %>%  #cuz its on the - strand, so techinically PosB is the start of the ITD
+    dplyr::select(Patient, gene , chromosome=seqnames, ref.exon.start=start, strand, WT1.mutation.rank=exon_rank, RefSeq.mRNA.ID, Transcript.ID)
+}) %>% 
+  bind_rows()
+
+# wt1.exons.df <- wt1.exons.df %>% 
+#   group_by(Patient) %>% 
+#   mutate(Keep=itd.start_exon.rank==min(itd.start_exon.rank)) %>% 
+#   ungroup() %>%
+#   filter(Keep) %>% 
+#   inner_join(., dplyr::select(cicero_raw, ID, matches("^(Pos|Chr|Orient|NumReads)[AB]")), 
+#              by=c("Patient"="ID"))  %>% 
+#   separate(Patient, into=c("Patient", "FLT3.ITD_Contig_ID"), sep="_")
+
+
+
+head(wt1.exons.df)
+head(WT1_Coords)
+# write.csv(wt1.exons.df, "WT1_Validation/TARGET_AML_WT1_RNAindel_toValidate_exon_ranks.csv", row.names = FALSE)
+```
+
+### Lower Confidence < 7 hits
+
+GRCh37 
+
+```{r}
+Grch37.txdb <- AnnotationDbi::loadDb(file.path(PROJHOME,
+                                      "0000.00.02_Reference_GeneInfo/SQL/GRCh37-lite_Ensembl_v69_TxDB.sqlite"))
+
+# seqlevelsStyle(Grch37.txdb)
+
+Grch37.exons <- GenomicFeatures::exonsBy(Grch37.txdb, by="tx", use.names=TRUE)
+# head(Grch37.exons)
+
+#NM_024426 ENST00000332351 with 10 exons
+Grch37.wt1_exons <- Grch37.exons[[grep("ENST00000332351", names(Grch37.exons))]]
+Grch37.wt1_exons
+```
+
+```{r}
+map_to_exons <- RNAindel_full_dx %>% 
+  filter(!grepl("c.360insC|c.271delGGC", Alteration)) %>% 
+  dplyr::select(Alteration, Chr, Pos_hg19) %>% 
+  distinct()
+
+map_to_exons.ranges <- GRanges(seqnames = S4Vectors::Rle(map_to_exons$Chr),
+                       ranges = IRanges::IRanges(start=map_to_exons$Pos_hg19,
+                                                 end=map_to_exons$Pos_hg19),
+                                                 # width=1,
+                                                 # names=map_to_exons$Alteration),
+                       strand="-")
+map_to_exons.ranges$Alteration <- map_to_exons$Alteration
+
+
+map_to_exons.gr <- lapply(1:length(map_to_exons.ranges), function(i){
+   IRanges::subsetByOverlaps(Grch37.wt1_exons, map_to_exons.ranges[i])
+})
+names(map_to_exons.gr) <- map_to_exons.ranges$Alteration
+# head(map_to_exons.gr)
+
+map_to_exons.df <- lapply(names(map_to_exons.gr), function(x){
+  df <- as.data.frame(map_to_exons.gr[[x]]) %>% 
+    mutate(gene="WT1",
+           transcript="NM_024426",
+           Alteration=x) %>% 
+    rename_at(vars(exon_rank), ~c("exon_rank_Alteration")) 
+}) %>% 
+  bind_rows() %>% 
+  left_join(., as.data.frame(map_to_exons.ranges), by="Alteration", suffix=c("_RefExon", "_Alteration"))  %>% 
+  dplyr::select(-matches("width|strand|_id"))
+
+
+
+# map_to_exons.df
+```
+
+
+```{r}
+RNAindel_Rescues.check <- RNAindel_Rescues %>% 
+  filter(WT1_Mutation != "False positive")  %>% 
+  dplyr::select(-N,-All_Fail, -REF_CNT, -ALT_CNT) %>%
+  left_join(.,map_to_exons.df, by="Alteration") %>% 
+  arrange(desc(WT1_Mutation), USI, desc(Alteration_HitCount)) %>% 
+  left_join(., dplyr::select(all_patients.clean,USI,Reg., WT1.mutation.,WT1.mutation_v2, FLT3.ITD.positive.),
+            by="USI") %>% 
+  dplyr::select(Protocol, Reg.,Sample:Alteration,exon_rank_Alteration,Alteration_HitCount, 
+                WT1.mutation.:FLT3.ITD.positive., gene, transcript) %>% 
+  
+
+  #Collapse to 1 row per patient
+  group_by(USI) %>%
+  mutate_at(vars(Reg., Protocol:Variant_Caller, WT1_Mutation, WT1.mutation.:FLT3.ITD.positive.), ~collapseRows(., uniq=TRUE, sep = "; ")) %>%
+  mutate_at(vars(Alteration:Alteration_HitCount), ~collapseRows(., uniq=FALSE, sep = "; ")) %>%
+  ungroup() %>%
+  rename_at(vars(WT1_Mutation), ~c("WT1_Mutation_TargAlign")) %>% 
+  distinct()
+
+
+
+dim(RNAindel_Rescues.check)
+# table(RNAindel_Rescues.check$WT1_Mutation_TargAlign)
+# write.csv(RNAindel_Rescues.check, "WT1_Validation/TARGET_AML_TargAlign_WT1_Possible_and_LowConfidence_Hits.csv", row.names = FALSE)
+```
+
+```{r}
+RNAindel_Rescues.check.collapse <- RNAindel_Rescues.check %>% 
+  # dplyr::select(Sample:Patient_ID, Protocol) %>% 
+  # #Collapse to 1 row per patient
+  # group_by(USI) %>%
+  # mutate_at(vars(Sample:WT1_Mutation, Patient_ID:Protocol), ~collapseRows(., uniq=TRUE, sep = "; ")) %>%
+  # mutate_at(vars(Alteration:Alteration_HitCount), ~collapseRows(., uniq=FALSE, sep = "; ")) %>%
+  # ungroup() %>%
+  # distinct()  %>% 
+  # full_join(., dplyr::select(all_patients.clean,USI,Reg., WT1.mutation.,WT1.mutation_v2, FLT3.ITD.positive.),
+  #           by="USI") %>% 
+  
+  full_join(., dplyr::select(merged.updated,Reg.,  OS.ID, Event.ID,OS.time..days.,EFS.time..days.),
+            by="Reg.") %>% 
+  
+  mutate_at(vars(WT1_Mutation_TargAlign), ~case_when(
+    grepl("Possible|Low", .) & WT1.mutation_v2=="Yes" ~ WT1.mutation_v2,
+    is.na(.) ~ WT1.mutation_v2,
+    TRUE ~ .)) %>% 
+  dplyr::select(Reg., Sample:Variant_Caller, WT1_Mutation_TargAlign,WT1.mutation_v2, WT1.mutation., everything()) %>% 
+  arrange(desc(WT1.mutation_v2), desc(WT1.mutation.), desc(WT1_Mutation_TargAlign)) %>% 
+  
+  filter(grepl("Low|Possible",WT1_Mutation_TargAlign) | !is.na(EFS.time..days.)) %>% 
+  filter(grepl("Low|Possible",WT1_Mutation_TargAlign) | c(WT1.mutation_v2 != "Unknown" & USI != "Unknown"))
+ 
+
+# RNAindel_Rescues.check.collapse
+# dim(RNAindel_Rescues.check.collapse)
+# table(is.na(RNAindel_Rescues.check.collapse$EFS.time..days.))
+```
+
+```{r}
+# RNAindel_Rescues.check.collapse %>%
+#   filter(is.na(EFS.time..days.))
+
+# RNAindel_Rescues.check.collapse %>% 
+#   group_by(WT1_Mutation_TargAlign, WT1.mutation_v2) %>% 
+#   count()
+# 
+# RNAindel_Rescues.check.collapse %>%
+#   group_by(WT1_Mutation_TargAlign, FLT3.ITD.positive., WT1.mutation_v2) %>%
+#   count()
+```
+
+```{r}
+dfA <- filter(RNAindel_Rescues.check.collapse, !is.na(EFS.time..days.)) 
+dfB <- dfA %>% 
+   mutate(Keep=case_when(
+     WT1_Mutation_TargAlign == "Possible" & grepl("7", exon_rank_Alteration) ~ TRUE,
+     grepl("Yes|No",WT1_Mutation_TargAlign) ~ TRUE,
+     TRUE ~ FALSE)) %>% 
+  filter(Keep)
+
+
+
+KM.rescues <- KM.plots(df=dfB,
+         group_vars = NULL,
+         type = "OS",
+         covariate = "WT1_Mutation_TargAlign", 
+         cohort = "1031")
+
+# KM.rescues
+```
+
+```{r fig.width=13, fig.height=7}
+# pdf("WT1_Validation/TARGET_AML_TargAlign_Possible_Hits_WT1exon7_KMplot.pdf", height = 7, width = 13)
+grid.arrange(grobs=c(KM.rescues$OS, KM.rescues$EFS), ncol=2)
+# dev.off()
+```
+
+## KIT 
+
+
+
+```{r}
+# table(all_patients.clean$KIT.mutation.) 
+table(all_patients.clean$Kit.Mutation.Exon.8)
+table(all_patients.clean$Kit.Mutation.Exon.8_v2) #Addition of 3 KIT mutations 
+
+table(all_patients.clean$Kit.Mutation.Exon.17) 
+table(all_patients.clean$Kit.Mutation.Exon.17_v2) #No change
+
+table(all_patients.clean$KIT_Mutation_byRNAseq)
+```
+
+```{r}
+KIT.check <- all_patients.clean %>% 
+  dplyr::select(Reg.,USI, Protocol, TARGET_or_1031, Fusion,Updated_Mutation_Group, matches("KIT")) %>%  
+  # mutate(KIT.mutation.=case_when(
+  #   Kit.Mutation.Exon.17=="Yes" | all_patients.clean$Kit.Mutation.Exon.8=="Yes" ~ "Yes",
+  #   Kit.Mutation.Exon.17=="Unknown" & USI %in% HasRNAseqMuts ~ "No",
+  #   # c(Kit.Mutation.Exon.17=="Unknown" | is.na(Kit.Mutation.Exon.17))  ~ "Unknown" ,
+  #   TRUE ~ " ")) %>% 
+  # mutate(Diff=case_when(
+  #   grepl("No", Kit.Mutation.Exon.17) & grepl("No", Kit.Mutation.Exon.8) & KIT_Mutation_byRNAseq=="Yes" ~ TRUE,
+  #   TRUE ~ FALSE))   %>%
+  # arrange(desc(KIT.mutation_v2), TARGET_or_1031, Protocol, KIT_Mutation_Caller_byRNAseq) %>%
+  filter(Updated_Mutation_Group=="KIT_byRNAseq")
+
+KIT.check
+```
+
+
+```{r}
+# KIT.check <- filter(NPM1.check, NPM.mutation_v2=="Yes")
+
+KIT_Coords <- raw_RNAindel %>%
+  filter(USI %in% KIT.check$USI) %>%
+  filter(annovar_sj_gene=="KIT") %>%
+  group_by(Sample) %>%
+  mutate(ID=paste(USI, 1:n(), sep="_")) %>%
+  ungroup() %>%
+  dplyr::select(ID, everything())
+
+
+
+KIT_Coords <- KIT_Coords %>% 
+  separate(annovar_exonic_function_gene, into=paste0("KIT_Transcript_", 1:10), 
+           sep=",", fill="right", extra="merge", remove = F) %>% 
+  dplyr::select(ID:ALT_CNT,matches("KIT_Transcript_"),annovar_exonic_function_gene, annovar_region_gene) 
+  # dplyr::select(ID:ALT_CNT, WT1.NM_000378=WT1_Transcript_1, WT1.NM_024426=WT1_Transcript_5, annovar_exonic_function_gene, annovar_region_gene) %>% 
+  # rowwise() %>% 
+  # mutate_at(vars(WT1.NM_000378,WT1.NM_024426), ~paste(str_split_fixed(., pattern=":", n=5)[,c(3,5)], collapse = "; ")) %>% 
+  # separate(WT1.NM_000378,into=c("WT1.NM_000378.Exon","WT1.NM_000378.ProteinChange"), sep="; ") %>% 
+  # separate(WT1.NM_024426,into=c("WT1.NM_024426.Exon","WT1.NM_024426.ProteinChange"), sep="; ") %>% 
+  # ungroup() 
+
+KIT_Coords
+```
+
+PAUVCB
+PAVLZE
+PAVMCA
+
+
+## UBTF and mono7
+
+```{r}
+table(all_patients.clean$UBTF.ITD.positive., 
+      all_patients.clean$Protocol)
+      # all_patients.clean$Fusion)
+```
+
+```{r}
+table(all_patients$monosomy.7)
+table(all_patients.clean$monosomy.7) #Added 3 mono7
+
+
+table(all_patients$del7q)
+table(all_patients.clean$del7q) #Added 7 del7q
+# table(all_patients.clean$monosomy7_del7q)
+```
+
+
+## CEBPA 
+
+```{r eval=FALSE}
+table(all_patients$CEBPA.mutation.)
+table(all_patients.clean$CEBPA.mutation.)
+table(all_patients.clean$CEBPA.mutation_v2) #Addition of 20 CEBPA
+table(all_patients.clean$CEBPA_Mutation_byRNAseq)
+```
+
+These are all N-term CEBPA or SNVs in BZip. 
+Only indels in BZip are clinically relevant. 
+
+```{r eval=FALSE}
+CEBPA.check <- all_patients.clean %>% 
+  dplyr::select(Reg.,USI, Protocol,FLT3.ITD.positive., FLT3.ITD.allelic.ratio,
+                WT1.mutation_v2,
+                TARGET_or_1031, Fusion, matches("CEBPA")) %>% 
+  mutate(Diff=CEBPA.mutation.!=CEBPA.mutation_v2) %>%
+  arrange(desc(CEBPA.mutation_v2), TARGET_or_1031, Protocol, 
+          CEBPA_Mutation_Caller_byRNAseq) %>%
+  filter(Diff) %>% 
+  arrange(desc(FLT3.ITD.positive.))
+
+dim(CEBPA.check)
+
+CEBPA.check
+table(CEBPA.check$CEBPA.mutation_v2) #20 updated
+write.csv(CEBPA.check, "TARGET_AML_CEBPA_check.csv", row.names = F)
+
+table(CEBPA.check$CEBPA_Mutation_byRNAseq,CEBPA.check$FLT3.ITD.positive.)
+table(CEBPA.check$CEBPA_Mutation_byRNAseq, CEBPA.check$WT1.mutation_v2)
+```
+
+
+## NPM1
+
+```{r eval=FALSE}
+table(all_patients$NPM.mutation.)
+table(all_patients.clean$NPM.mutation_v2) #addition of 5 NPM1
+table(all_patients.clean$NPM1_Mutation_byRNAseq)
+```
+
+```{r, eval=FALSE}
+NPM1.check <- all_patients.clean %>% 
+  dplyr::select(Reg.,USI, Protocol,
+                FLT3.ITD.positive., FLT3.ITD.allelic.ratio,
+                NPM.mutation_v2,
+                TARGET_or_1031, Fusion, matches("NPM")) %>% 
+  mutate(Diff=NPM.mutation.!=NPM.mutation_v2) %>%
+  arrange(desc(NPM.mutation_v2), 
+          TARGET_or_1031, Protocol, 
+          NPM1_Mutation_Caller_byRNAseq) %>%
+  filter(Diff) 
+# NPM.mutation_v2=="Yes"
+
+# NPM1.check
+```
+
+```{r eval=FALSE}
+NPM1.new <- filter(NPM1.check, NPM.mutation_v2=="Yes")
+
+NPM1_Coords <- raw_RNAindel %>%
+  filter(USI %in% NPM1.new$USI) %>%
+  filter(annovar_sj_gene=="NPM1") %>%
+  group_by(Sample) %>%
+  mutate(ID=paste(USI, 1:n(), sep="_")) %>%
+  ungroup() %>%
+  dplyr::select(ID, everything())
+
+
+
+NPM1_Coords <- NPM1_Coords %>% 
+  separate(annovar_exonic_function_gene, into=paste0("NPM1_Transcript_", 1:10), 
+           sep=",", fill="right", extra="merge", remove = F) %>% 
+  dplyr::select(ID:ALT_CNT,matches("NPM1_Transcript_"),annovar_exonic_function_gene, annovar_region_gene) 
+
+
+# NPM1_Coords
+```
+
+
+# Initial Cohort Selection 
+
+Data types:
+1. ISCN
+2. RNAseq fusion
+3. RNAseq Indel
+4. Molecular Assays (NPM1, WT1, CEBPA)
+
+```{r}
+FLT3.Cohort <- all_patients.clean %>% 
+  filter(FLT3.ITD.positive.=="Yes") %>% 
+  mutate(KMT2A=case_when(
+    grepl("KMT2A", Fusion) | grepl("KMT2A", Additional.Fusions.CNV) ~ "KMT2A",
+    ScreenedForFusion == "No" ~ "Unknown",
+    TRUE ~ "No"))  %>% 
+  #Keep the updated columns only   
+  mutate(WT1.mutation.=WT1.mutation_v2,
+         Kit.Mutation.Exon.8=Kit.Mutation.Exon.8_v2,
+         Kit.Mutation.Exon.17=Kit.Mutation.Exon.17_v2) %>% 
+  mutate(KIT.mutation.=case_when(
+    Kit.Mutation.Exon.8 == "Yes" | Kit.Mutation.Exon.17=="Yes" ~ "Yes",
+    TRUE ~ Kit.Mutation.Exon.8 ))
+         # CEBPA.mutation.=CEBPA.mutation_v2,
+         # NPM.mutation.=NPM.mutation_v2,
+         # KIT.mutation.=KIT.mutation_v2)  
+  
+
+dim(FLT3.Cohort) #517  61
+# table(FLT3.Cohort$WT1.mutation_v2)
+# table(FLT3.Cohort$KIT.mutation.)
+```
+
+```{r}
+#Should we include del7q and del9q?? 
+sel_cols <- c("Fusion",  "KMT2A" , "Primary.CNV",  "WT1.mutation.","NPM.mutation.", "CEBPA.mutation." ,"KIT.mutation.","del5q", "monosomy.7", "trisomy.8", "trisomy.21")
+
+
+Cooperating_Table <- FLT3.Cohort %>% 
+  dplyr::select(FLT3.ITD.positive., all_of(sel_cols)) %>% 
+  gather(Mutation_or_Fusions, Category, -FLT3.ITD.positive.) %>% 
+  filter(!grepl("^No ?$|Unknown|No.Relevant.CNV|^None|^$", Category)) %>%
+  
+  group_by(FLT3.ITD.positive., Mutation_or_Fusions, Category) %>%
+  dplyr::count() %>%
+  arrange(desc(n)) %>% 
+  ungroup() %>% 
+  filter(n >= 5)
+
+# Cooperating_Table
+```
+
+```{r}
+sel_muts <- c("WT1.mutation.","NPM.mutation.", "CEBPA.mutation." , "trisomy.8")
+
+FLT3.Cohort.clean <- FLT3.Cohort %>% 
+  dplyr::select(Reg.,USI,         
+                Was.sample.sent.for.RBD.sequencing,
+                ISCN, Fusion,
+         FLT3.ITD.positive., FLT3.ITD.allelic.ratio,
+         all_of(sel_muts)) %>% 
+  dplyr::select(Reg.:FLT3.ITD.allelic.ratio, Fusion, everything()) %>% 
+  
+  #Transform all positive cases into the variable name, rather than  "Yes"
+  #Would like to figure this out programattically tbh
+  mutate_at(vars(WT1.mutation.), ~gsub("Yes", "WT1.mutation", .)) %>%
+  mutate_at(vars(NPM.mutation.), ~gsub("Yes", "NPM.mutation", .)) %>%
+  mutate_at(vars(CEBPA.mutation.), ~gsub("Yes", "CEBPA.mutation", .)) %>%
+  mutate_at(vars(trisomy.8), ~gsub("Yes", "trisomy.8", .)) %>%
+  
+  # mutate_at(vars(KIT.mutation.), ~gsub("Yes", "KIT.mutation", .)) %>%
+  # mutate_at(vars(KMT2A), ~gsub("Yes", "KMT2A", .)) %>%
+  # mutate_at(vars(del9q), ~gsub("Yes", "del9q", .)) %>%
+  # mutate_at(vars(del7q), ~gsub("Yes", "del7q", .)) %>% 
+  # mutate_at(vars(Primary.Fusion), ~gsub("KMT2A.+", NA, .)) %>% 
+  
+  #Condense all KMT2A into a single category due to N=13 across all partners
+  mutate_at(vars(Fusion), ~case_when(
+    grepl("KMT2A-", .) ~ "KMT2A",
+    TRUE ~ .)) %>% 
+  
+  # #Create column for cooperating mutations
+  dplyr::select(Reg.:Was.sample.sent.for.RBD.sequencing,FLT3.ITD.positive.:FLT3.ITD.allelic.ratio, Fusion, WT1.mutation.:trisomy.8) %>% 
+  mutate_at(vars(Fusion:trisomy.8), ~gsub("^No ?$|Unknown|^None$|^$", NA, .)) %>%
+  unite(Cooperating_Mutations_Fusions,c(Fusion:trisomy.8), sep=" / ", remove = FALSE, na.rm=TRUE) %>% 
+  
+  mutate_at(vars(Cooperating_Mutations_Fusions), ~ifelse(.=="", "FLT3-ITD",paste("FLT3-ITD", ., sep=" / "))) %>% 
+  arrange(desc(Cooperating_Mutations_Fusions))
+
+    
+
+# FLT3.Cohort.clean
+```
+
+```{r}
+Cooperating_Table.final <- FLT3.Cohort.clean %>% 
+  
+  #Calculate number of co-occuring abnormalities/mutations
+  group_by(Cooperating_Mutations_Fusions,Was.sample.sent.for.RBD.sequencing) %>%
+  summarise(Number_of_Samples_with_CooperatingMuts_RNA=n()) %>%
+  ungroup() %>% 
+  
+  group_by(Cooperating_Mutations_Fusions) %>% 
+  mutate(Number_of_Samples_with_CooperatingMuts=sum(Number_of_Samples_with_CooperatingMuts_RNA)) %>% 
+  ungroup() %>% 
+  
+  pivot_wider(id_cols=c(Cooperating_Mutations_Fusions,Number_of_Samples_with_CooperatingMuts), 
+              names_from=Was.sample.sent.for.RBD.sequencing, 
+              values_from=Number_of_Samples_with_CooperatingMuts_RNA) %>% 
+  rename_at(vars(Yes), ~paste0("Number_of_Samples_with_RNAseq")) %>%
+  dplyr::select(-No) %>%
+  arrange(desc(Number_of_Samples_with_CooperatingMuts))
+  
+
+Cooperating_Table.final
+
+table(Cooperating_Table.final$Cooperating_Mutations_Fusions)
+# write.csv(Cooperating_Table.final, "Cooperating_Mutations/FLT3.ITD_Cooperating_Mutations_Freq_Table.csv", row.names = FALSE)
+```
+
+
+# Final Cohort and Cleaning 
+
+```{r}
+FLT3_Cohort.Final <- all_patients.clean %>% 
+  #Merge in the cooperating groups
+  left_join(.,  dplyr::select(FLT3.Cohort.clean, Reg., 
+                              FLT3_Cooperating_Muts_CNVs_Fusions=Cooperating_Mutations_Fusions),
+            by="Reg.") %>% 
+  mutate_at(vars(FLT3_Cooperating_Muts_CNVs_Fusions), ~as.factor(ifelse(is.na(.), "OtherAML", .))) %>% 
+  mutate(FLT3_Cooperating_Muts_CNVs_Fusions=relevel(FLT3_Cooperating_Muts_CNVs_Fusions, ref="OtherAML")) %>% 
+  
+  #Keep the updated columns only 
+  mutate(WT1.mutation.=WT1.mutation_v2,
+         Kit.Mutation.Exon.8=Kit.Mutation.Exon.8_v2,
+         Kit.Mutation.Exon.17=Kit.Mutation.Exon.17_v2) %>% 
+  
+  #Standardize the AR values across studies
+  mutate_at(vars(FLT3.ITD.allelic.ratio), ~case_when(
+    grepl("[0-9]", .) & as.numeric(.) < 0.1 ~ "<0.1",
+    FLT3.ITD.positive.=="No" & .=="Unknown"  ~ NA_character_,
+    FLT3.ITD.positive.=="Unknown" & .=="Unknown" ~ NA_character_,
+    FLT3.ITD.positive.=="Yes" & is.na(.) ~ "Unknown",
+    TRUE ~ .)) %>% 
+  arrange(desc(FLT3.ITD.positive.), desc(FLT3_Cooperating_Muts_CNVs_Fusions), Protocol)
+
+
+
+#Add in the outcome data
+sel_cols <- c("Fusion","UBTF.ITD.positive.", "WT1_Detection_Method","WT1.mutation.","NPM.mutation.", "CEBPA.mutation." ,"del5q", "monosomy.7", "trisomy.8", "trisomy.21")
+cde_cols <- setdiff(colnames(merged.updated), colnames(FLT3_Cohort.Final))
+FLT3_Cohort.Final <- FLT3_Cohort.Final %>% 
+  left_join(., dplyr::select(merged.updated,Reg.,all_of(cde_cols)),
+            by="Reg.")
+
+
+#Cols to change to Unknown
+character_cols <- sapply(FLT3_Cohort.Final, is.character)
+character_cols <- names(character_cols[character_cols])
+character_cols <- character_cols[-grep("Reg.|SJ_ID|FLT3.ITD.allelic.ratio|GO.Treatment|Additional.Fusions.CNV", character_cols)]
+
+
+
+#Remove extranous columns to share with the lab, like the RNAindel columns, etc.
+#Keep the updated columns only   
+FLT3_Cohort.Final <- FLT3_Cohort.Final %>% 
+  mutate_at(vars(Group), ~ifelse(is.na(.), "AML", .)) %>% 
+  mutate_at(vars(all_of(character_cols)), ~case_when(
+    is.na(.) ~ "Unknown",
+    TRUE ~ .)) %>% 
+  mutate_at(vars(CEBPA.Double.Single.Allelic.Status), ~case_when(
+    CEBPA.mutation. == "No" & .=="Unknown" ~ "None",
+    TRUE ~ .)) %>% 
+  dplyr::select(Reg.:TARGET.cohort,
+                TARGET_or_1031, ISCN,
+                 Needs_Updated_CNV,Updated_Mutation_Group,
+                FLT3_Cooperating_Muts_CNVs_Fusions,
+                FLT3.ITD.positive.:FLT3.ITD.allelic.ratio,
+                Primary.Fusion:Cyto_vs_Seq_Fusions,
+                FLT3.ITD.positive.:Cyto_vs_Seq_Fusions,
+                WT1.mutation.comments,
+                all_of(sel_cols),del7q,
+                Was.sample.sent.for.RBD.sequencing,
+                ScreenedForFusion,
+                all_of(cde_cols), 
+                -matches("_V2|_byRNAseq|_CICERO"),
+                # -Updated_CNV, 
+                -Updated_Mutation_Group)
+
+
+
+dim(FLT3_Cohort.Final) #3635  154
+# table(FLT3_Cohort.Final$WT1_Detection_Method)
+table(FLT3_Cohort.Final$WT1.mutation.)
+table(FLT3_Cohort.Final$FLT3.ITD.positive.)
+
+
+# FLT3_Cohort.Final
+# any(!colnames(merged.updated) %in% colnames(FLT3_Cohort.Final))
+# colnames(merged.updated)[!colnames(merged.updated) %in% colnames(FLT3_Cohort.Final)] #OK
+# table(FLT3_Cohort.Final$Eligibility, FLT3_Cohort.Final$Additional_Pts_Earlier_Studies_2021)
+
+
+# table(FLT3_Cohort.Final$CEBPA.mutation.)
+# table(FLT3_Cohort.Final$CEBPA.Double.Single.Allelic.Status)
+# table(FLT3_Cohort.Final$NPM.mutation.)
+```
+
+
+# Save as Merged CDEs For Lab 
+
+```{r}
+colname_map <- openxlsx::read.xlsx(file.path(CDE, "00_Archive/TARGET_AML_Colnames_Mapping_File_v3_ALedits.xlsx"))
+dim(colname_map)
+```
+
+### Update colname mapping file 
+
+```{r}
+cols_to_include <- setdiff(colnames(FLT3_Cohort.Final), colname_map$Merged_CDEs_Colnames) %>% 
+  grep("WGS|Part.of.684.cohort|TARGET.cohort|UBTF.ITD.positive.|WT1_Detection_Method|WT1.mutation.comments", ., value=TRUE)
+  # gsub("WGS", "Was.sample.sent.for.WGS", .)
+
+# cols_to_include
+
+colname_map.update <- colname_map %>% 
+  add_row(Merged_CDEs_Colnames=cols_to_include[1:3], .after = 54) %>% 
+  add_row(Merged_CDEs_Colnames=cols_to_include[5], .after=64) %>%
+  add_row(Merged_CDEs_Colnames=cols_to_include[c(6,4)], .after=66) %>%
+  
+  mutate(Final_Merged_CDEs_Colnames=case_when(
+    Merged_CDEs_Colnames == "WGS" ~ "Was.sample.sent.for.WGS",
+    Merged_CDEs_Colnames == "Part.of.684.cohort" ~ "Was.sample.part.of.684.cohort",
+    Merged_CDEs_Colnames == "TARGET.cohort" ~ "Was.sample.part.of.TARGET.cohort",
+    Merged_CDEs_Colnames == "TARGET_or_1031" ~ "Was.patient.in.NCI.TARGET.cohort",
+    Merged_CDEs_Colnames == "WT1_Detection_Method" ~ "WT1.detection.method", 
+    TRUE ~ Merged_CDEs_Colnames))  %>% 
+  
+  mutate_at(vars(RedCap_CDEs_Colnames), ~case_when(
+    is.na(.) ~ tolower(gsub("\\.", "_", Final_Merged_CDEs_Colnames)), 
+    .=="target_or_1031" ~ tolower(gsub("\\.", "_", Final_Merged_CDEs_Colnames)),
+    TRUE ~ .)) %>% 
+  
+  mutate_at(vars("Column_Type"), ~case_when(
+    is.na(.) & grepl("mutation|ITD", .,  ignore.case = T) ~ "mutation data",
+    grepl("Was.sample|Was.patient", Final_Merged_CDEs_Colnames) ~ "comments or notes",
+    is.na(.) ~ "general clinical covariates", 
+    TRUE ~ .)) %>%
+  
+  #Re-order the colnames 
+  dplyr::slice(1:48, 54:57, 49:53, 58:150) #this doesnt duplicate any rows... what is the difference?
+    # dplyr::slice(1:48, 54:57, 49:53, 58:NCOL(.)) #this duplicates my rows?? 
+
+
+# View(colname_map.update)
+# colname_map.update %>%
+#   filter(grepl("Kit", Merged_CDEs_Colnames))
+
+
+
+df <- colname_map.update %>%
+                        mutate(Merged_CDEs_Colnames=Final_Merged_CDEs_Colnames) %>%
+                        dplyr::select(-Final_Merged_CDEs_Colnames) %>%
+  as.data.frame()
+# write.csv(df,file.path(CDE,"TARGET_AML_Colnames_Mapping_File_v4.csv"), row.names = FALSE )
+# openxlsx crashing non-stop. cannot use.
+# openxlsx::write.xlsx(df,
+#                      file.path(CDE,"TARGET_AML_Colnames_Mapping_File_v4.xlsx"),
+#                      keepNA = FALSE, row.names = FALSE)
+```
+
+```{r}
+cols_conversion <- colname_map.update %>% 
+  filter(!is.na(Merged_CDEs_Colnames))
+
+
+Final_Merged_CDEs <- FLT3_Cohort.Final %>%
+  select(Fusion, all_of(cols_conversion$Merged_CDEs_Colnames)) %>% 
+  rename_all(~c("Fusion", cols_conversion$Final_Merged_CDEs_Colnames)) %>% 
+  group_by(USI) %>% 
+  mutate_at(vars(USI), ~case_when(
+    .=="Unknown" ~ paste0("Unknown", "_USI_",1:n()),
+    TRUE ~ .)) %>% 
+  ungroup()
+  
+
+dim(Final_Merged_CDEs) #3635  151
+# head(Final_Merged_CDEs)
+
+
+# table(Final_Merged_CDEs$Additional.Fusions.CNV)
+table(Final_Merged_CDEs$FLT3.ITD.positive.)
+table(Final_Merged_CDEs$WT1.mutation.)
+table(Final_Merged_CDEs$CEBPA.mutation.)
+table(Final_Merged_CDEs$NPM.mutation.)
+
+# table(Final_Merged_CDEs$WT1.mutation.comments)
+# table(Final_Merged_CDEs$Cyto_vs_Seq_Fusions)
+
+# table(Final_Merged_CDEs$Eligibility, Final_Merged_CDEs$Protocol)
+```
+
+
+```{r}
+# Reg# 749858 (AAML03P1) – this patient is not in the listing but I have for NPM- negative, CEBPA-negative, ITD-positive with AR=0.74, WT1-negative
+# Reg# 701385 (2961) – this patient is listed as having CEBPA -negative, WT1-unknown, but I have CEBPA-positive and WT1-negative.
+
+last_pts_fix <- c(749858,701385)
+
+# filter(Final_Merged_CDEs, Reg. %in% last_pts_fix) %>%
+#   select(Reg.,Protocol, Primary.Fusion, matches("NPM\\.|WT1\\.|FLT3.ITD|CEBPA\\."))
+```
+
+
+```{r}
+comments <- c("Added 1,216 patients from earlier studies, AAML03P1, AAML0531, and CCG-2961 who were not in the CDEs previously. The earlier studies also updated WT1 status for 11 patients, 8/11 were made WT1 postive after being classified as negative. It also updated 3 FLT3-ITD+ patients who were classified as negative.  These additioonal patients generally lack sequening and outcome data, but do have mutation and ISCN data. Harmonized the AAML1031 CDEs sent to COG with the Merged CDEs. The harmonization process added negative patients for GATA2/CSF3R and included WT1 mutation calls from WGS. 
+              Patients with Reg. numbers only, were assigned a unique `Unknown_USI_[0-9]` number to help prevent data loss An additional 24 WT1 mutations were included in AAML1031 from RNAseq RNAindel/SNV calls. An additional3 KIT exon 8 mutations were included in AAML1031 from RNAseq RNAindel/SNV calls There were 82 patients who had updates to FLT3-ITD, or WT1, or CEBPA, or NPM1 mutations calls based on previous molecular assay data. Updated Cyto_vs_Seq_Fusions for some NUP98-NSD1 who have RNAseq only or qPCR only
+              Updated the NPM1 for ~400 patients who were unknown and now have yes/no status based on Data privided from COG (AMLpts.xlsx). This also updated 1 CEBPA  and 20 patients' FLT3-ITD status . Updated ~412 WT1 patients status from Unknown to No/yes (only 2 positives) based on Data from COG") %>%
+  cat()
+
+# comments
+
+# date="05.11.21"
+date="05.21.21"
+
+
+# write.csv(select(Final_Merged_CDEs,-Fusion),
+#           file.path(CDE, "Merged", paste0("TARGET_AML_0531_1031_merged_CDEs_",date,".csv")), row.names = FALSE)
+# saveRDS(select(Final_Merged_CDEs,-Fusion),
+#         file.path(CDE, "Merged", paste0("TARGET_AML_0531_1031_merged_CDEs_",date,".RDS"))) #no one seems to use the .RDS
+# openxlsx::write.xlsx(select(Final_Merged_CDEs,-Fusion),
+#                      file.path(CDE, "Merged", paste0("TARGET_AML_0531_1031_merged_CDEs_", date,".xlsx")), keepNA = FALSE, row.names = FALSE)
+# # Have a version without Reg. for sharing!
+# openxlsx::write.xlsx(select(Final_Merged_CDEs,-Reg., -Fusion),
+#                      file.path(CDE,"Merged", paste0("TARGET_AML_0531_1031_merged_CDEs_Shareable_",date,".xlsx")), keepNA = FALSE,  row.names = FALSE)
+# write.csv(select(Final_Merged_CDEs,-Reg.), file.path(CDE, "Merged", paste0("TARGET_AML_0531_1031_merged_CDEs_Shareable_",date,".csv")), row.names = FALSE)
+```
+
+
+
+## For COG Statisticians 
+
+```{r eval=FALSE}
+cols_to_include <- c("Reg.",
+                     "Protocol",
+                     "Eligibility",
+                     "Eligibility_Comments",
+                     "Fusion",
+                     "Cyto_vs_Seq_Fusions",
+                     # "Primary.CNV",
+                     "FLT3.ITD.positive.",
+                     "FLT3.ITD.allelic.ratio",
+                     "WT1.mutation.",
+                     "WT1.mutation.comments",
+                     "WT1.detection.method",
+                     "NPM.mutation.",	
+                     "CEBPA.mutation.")
+                     # "del5q",	"monosomy.7",	"trisomy.8",	"trisomy.21") 
+
+
+cols_to_include <- Final_Merged_CDEs %>% 
+  dplyr::select(all_of(cols_to_include)) %>% 
+                # Eligibility:EFS.event.type.ID,
+                # # Cyto.Fusion.Molecular.Risk_update:Final.Risk.Group,
+                # Days.to.OS.from.end.of.induction.1.for.pts.who.are.CR.at.EOI1:CNS.Site.of.Relapse.Induction.Failure) %>% 
+  colnames(.) 
+
+# length(cols_to_include)
+# table(cols_to_include %in% colname_map$Merged_CDEs_Colnames)
+# 
+# 
+# col_order <- colname_map$Merged_CDEs_Colnames[colname_map$Merged_CDEs_Colnames %in% cols_to_include]
+# col_order <- c(col_order[1:33],"Fusion",col_order[34:65])
+# col_order
+
+
+cols_conversion <- colname_map.update %>% 
+  filter( Final_Merged_CDEs_Colnames %in% cols_to_include) %>% 
+  add_row(Final_Merged_CDEs_Colnames="Fusion", .after = 2) %>% 
+  # mutate(Final_Merged_CDEs_Colnames=factor(Final_Merged_CDEs_Colnames, levels=Final_Merged_CDEs_Colnames)) %>% 
+  # arrange(Final_Merged_CDEs_Colnames) %>% 
+  mutate_at(vars(AAML1031_Official_Colnames), ~case_when(
+    is.na(.) ~ gsub("\\.|_", " ", Final_Merged_CDEs_Colnames),
+    TRUE ~ .)) 
+
+forCOG <- Final_Merged_CDEs %>% 
+  filter(!c(grepl("PML-RARA", Primary.Fusion) & !FLT3.ITD.positive.=="Yes")) %>%
+  dplyr::select(all_of(cols_conversion$Final_Merged_CDEs_Colnames)) %>% 
+  # filter(!Reg. %in% inelig, 
+  #        !grepl("S.1327", Reg.)) %>% 
+  filter(!grepl("S.1327", Reg.)) %>%
+  
+  rename_all(~cols_conversion$AAML1031_Official_Colnames) %>% 
+  mutate_at(vars(`Cyto vs. Seq`), ~case_when(
+    Fusion=="" ~ "",
+    TRUE ~ .))
+
+forBenHuang <- Final_Merged_CDEs %>% 
+  filter(!c(grepl("PML-RARA", Primary.Fusion) & !FLT3.ITD.positive.=="Yes")) %>%
+  dplyr::select(USI, all_of(cols_conversion$Final_Merged_CDEs_Colnames)) %>% 
+  # filter(!Reg. %in% inelig, 
+  #        !grepl("S.1327", Reg.)) %>% 
+  filter(!grepl("S.1327", Reg.)) %>%
+  
+  rename_all(~c("USI",cols_conversion$AAML1031_Official_Colnames)) %>% 
+  select(-`Reg `) %>%
+  mutate_at(vars(`Cyto vs. Seq`), ~case_when(
+    Fusion=="" ~ "",
+    TRUE ~ .))
+
+
+dim(forCOG) #3632   13 (1 patients are PML-RARA)
+table(forCOG$`FLT3/ITD positive?`) #517
+table(forCOG$`WT1 mutation?`) #326
+
+# dim(Final_Merged_CDEs)
+# table(forCOG$`WT1 detection method`)
+# table(forCOG$`WT1 mutation comments`)
+
+# table(forCOG$Eligibility)
+# any(is.na(forCOG$`Reg `)) #FALSE
+# any(forCOG$`Reg `=="") #FALSE
+
+# View(forCOG)
+# View(cols_conversion)
+
+
+# write.csv(forCOG,"TARGET_AML_CCG2961_03P1_0531_1031_FLT3.ITD_Manuscript_Cohort_COG_5.11.21.csv", row.names = FALSE)
+# write.csv(forCOG,"TARGET_AML_CCG2961_03P1_0531_1031_FLT3.ITD_Manuscript_Cohort_COG_5.21.21_v2.csv", row.names = FALSE)
+
+
+# write.csv(forBenHuang,"TARGET_AML_CCG2961_03P1_0531_1031_FLT3.ITD_Manuscript_Cohort_withUSIs_5.21.21_v2.csv", row.names = FALSE)
+```
+
+```{r}
+Freq_Table <- forCOG %>% 
+  gather(Mutation, Status, `FLT3/ITD positive?`, `WT1 mutation?`, `CEBPA mutation?`, `NPM mutation?`)  %>% 
+  select(Mutation, Status) %>% 
+  group_by(Mutation, Status) %>% 
+  count() %>% 
+  mutate(Status=gsub("No","Negative", gsub("Yes", "Positive", Status))) %>% 
+  spread(Status, n)
+
+
+Freq_Table
+# write.csv(Freq_Table, "FLT3.ITD_Manuscript_Cohort_Table_5.21.21_v2.csv", row.names = FALSE)
+```
+
+```{r}
+orig <- read.csv("00_Archive/TARGET_AML_CCG2961_03P1_0531_1031_FLT3.ITD_Manuscript_Cohort_COG_5.11.21.csv")
+table(orig$WT1.mutation.)
+table(forCOG$`WT1 mutation?`, forCOG$`Eligibility Comments`) #324 (5 removed for ineligibility)
+table(orig$WT1.mutation.comments)
+table(orig$WT1.detection.method)
+
+ 
+table(forCOG$`NPM mutation?`)
+table(Final_Merged_CDEs$NPM.mutation.)
+table(all_patients.clean$NPM.mutation.)
+table(orig$NPM.mutation.)
+
+
+# table(forCOG$`CEBPA mutation?`)
+# table(Final_Merged_CDEs$CEBPA.mutation.)
+# table(orig$CEBPA.mutation.)
+```
+
+
+# Unsupervised Clustering
+
+
+## Visualize Updated Mutations
+
+validation by clustering or molecular pcr assay
+
+```{r}
+table(all_patients.clean$Updated_Mutation_Group)
+```
+
+```{r}
+umap_cebpa <- readRDS(file.path(PROJHOME,"2019.12.31_UMAP_Clustering/Results/Dx_AMLonly_forCEBPA_PCAselect_sg6816/TARGET_AML_sg6818_UMAP_CEBPA_Results.RDS"))
+
+dim(umap_cebpa$umap_res)
+```
+
+```{r}
+umap_res_recolor <- umap_cebpa$umap_res %>% 
+  dplyr::select(Sample, x:z) %>% 
+  inner_join(., sample_info, by="Sample") %>%
+  inner_join(., dplyr::select(FLT3_Cohort.Final,USI, Age.in.years, EFS.event.type.ID,
+                       Mutation_Group=Updated_Mutation_Group,
+                       WT1.mutation.,
+                       NPM.mutation.,
+                       CEBPA.mutation.,
+                       CEBPA_Alteration_byRNAseq, FLT3.ITD.positive.),
+             by="USI") %>% 
+  set_rownames(.$Sample)
+
+table(umap_res_recolor$Mutation_Group)
+
+umap_RNAindel <- umap_cebpa
+umap_RNAindel$umap_res <- umap_res_recolor
+
+# umap_RNAindel$umap_res$CEBPA_Alteration_byRNAseq
+# table(FLT3_Cohort.Final$WT1.mutation.)
+```
+
+
+```{r fig.height=6, fig.width=12}
+grps <- unique(umap_res_recolor$Mutation_Group)
+grps <- grps[order(grps)]
+colors_RNAindel <- RColorBrewer::brewer.pal(12, "Set3") %>% 
+  set_names(grps)
+colors_RNAindel["CEBPA"] <- "green1"
+colors_RNAindel["CEBPA_byRNAseq"] <- "magenta"
+colors_RNAindel["NUP98-NSD1"] <- "#BC80BD"
+colors_RNAindel["OtherAML"] <- "#D9D9D9"
+
+par(mar=c(10,10,10,10))
+barplot(rep(1, length(colors_RNAindel)),col=colors_RNAindel, las=2, names.arg = names(colors_RNAindel))
+```
+
+```{r message=FALSE}
+# library(plotly)
+columns <- c("Sample",
+             "Primary.Fusion", "Primary.CNV", 
+             "Mutation_Group",
+             "FLT3.ITD.positive.",
+             "WT1.mutation.",
+             "NPM.mutation.",
+             "CEBPA.mutation.",
+             "CEBPA_Alteration_byRNAseq", 
+             "Age.in.years", "EFS.event.type.ID")
+
+scatter3d <- scatter_plots_3d(umap_workflow_res = umap_RNAindel,
+                              Group_Column = "Mutation_Group",
+                              Cols = columns,
+                              cc = colors_RNAindel,
+                              blackbg = TRUE,
+                              ptsize = 5)
+```
+
+```{r fig.height=10, fig.width=10}
+# scatter3d
+```
+
+```{r}
+bgcol <- rgb(0,0,0)
+# bgcol <- rgb(1,1,1)
+htmlwidgets::saveWidget(as_widget(scatter3d),
+                        "TARGET_AML_RNAseq_Mutations_4.13.21.html",
+                        selfcontained = TRUE,
+                        background = bgcol)
+
+```
+
+
+
+
+# QC Plots 
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+

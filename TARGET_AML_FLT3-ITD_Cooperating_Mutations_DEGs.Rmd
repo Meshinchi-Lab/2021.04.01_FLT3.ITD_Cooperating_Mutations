@@ -1,0 +1,167 @@
+---
+title: "FLT3-ITD transcriptome Profilin"
+author: "Jenny Smith"
+date: "8/26/21"
+output: html_document
+---
+
+# Set-up 
+
+```{r setup, cache = FALSE, include = FALSE}
+require(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2021.04.01_FLT3.ITD_Cooperating_Mutations/"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),
+                      tidy=TRUE,
+                      fig.align='center',
+                      fig.width = 10, fig.height = 10)
+node=Sys.info()[["nodename"]]
+if(!grepl("local", node)){
+  print(node)
+  options(bitmapType = 'cairo')
+  grDevices::X11.options(type='cairo')
+}
+
+options(stringsAsFactors = FALSE)
+table = function (..., useNA = 'ifany') base::table(..., useNA = useNA)
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+
+library(ggplot2)
+library(gridExtra)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+
+library(DeGSEA)
+
+getwd()
+```
+
+
+#Raw Counts
+
+```{r}
+cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+
+gene_ids <- cts[,c(1:2)]
+cts <- as.data.frame(cts)
+rownames(cts) <- cts$geneSymbol
+cts <- cts[,-c(1:2)]
+
+head(cts[,1:5])
+dim(cts) #51573  3044
+```
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_05.21.21.csv"))
+
+inelig <-  merged %>% 
+  filter(Eligibility_Comments == "remove") %>% 
+  select(Reg., USI)
+
+merged <- merged %>% 
+  filter(Eligibility_Comments != "remove")
+
+
+dim(merged)
+```
+
+```{r}
+sample_info <- read.csv(file.path(TARGET, "SequencingDataMatrix/TARGET_AML_Ribodepleted_Manifest_08.12.21.csv")) 
+
+dim(sample_info)
+```
+
+```{r}
+cohort <- openxlsx::read.xlsx("pts_3033_for_FLT3_Manuscript_Regs_COG.xlsx")
+
+head(cohort)
+# dim(cohort) #3033    1
+```
+
+# Select Samples 
+
+```{r}
+samples <- sample_info %>% 
+  left_join(., select(merged, Reg., USI, FLT3.ITD.positive.,WT1.mutation.,
+                      NPM.mutation.,CEBPA.mutation.,trisomy.8, ISCN), 
+            by="USI") %>% 
+  filter(grepl("^AML$|NBM|CD34_PB", Group), Time_point != "AML") %>% 
+  filter(Group=="NBM" |  Group == "CD34_PB" | Reg. %in% cohort$reg_no) %>%
+  filter(!grepl("_replicate", Sample)) %>% 
+  
+  mutate_at(vars(Time_point), ~factor(., levels=c("diagnostic","relapse","remission", "NBM","CD34_PB"))) %>% 
+  mutate_at(vars(Additional.Fusions.CNV), ~ifelse(.=="Unknown", NA, .)) %>% 
+  mutate_at(vars(trisomy.8), ~case_when(
+    .=="Unknown" & ISCN != "Unknown" ~ NA_character_,
+    TRUE ~ .)) %>% 
+  arrange(Time_point, desc(FLT3.ITD.positive.), Primary.Fusion,
+          desc(WT1.mutation.), desc(NPM.mutation.), desc(CEBPA.mutation.)) %>%
+  select(USI, Sample, Protocol,Time_point,
+         FLT3.ITD.positive.,Primary.Fusion, WT1.mutation.,
+         NPM.mutation.,CEBPA.mutation.,trisomy.8, Primary.Fusion, 
+         Additional.Fusions.CNV,ISCN,
+         everything(), 
+         -Reg.) 
+  
+
+
+head(samples)
+# dim(samples)
+
+
+
+# table(samples$Reg. %in% cohort$reg_no) #84 missing are the NBM and the CD34_PB
+# table(samples$USI %in% inelig$USI) #OK
+# 
+# table(samples$Time_point)
+
+
+# write.csv(select(samples,-Reg.), "FLT3.ITD_Manuscript_Cohort_with_RNAseq_mutations_and_fusion_info.csv", row.names = FALSE)
+```
+
+```{r}
+forKatherine <- samples %>% 
+  filter(Group=="AML") %>% 
+  group_by(Group, Time_point, FLT3.ITD.positive.) %>% 
+  count() %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols=c(Group, FLT3.ITD.positive.), 
+              names_from=Time_point,
+              values_from=n) %>% 
+  rename_at(vars(diagnostic:remission), ~paste0("Number_of_",.,"_Samples")) %>% 
+  arrange(desc(FLT3.ITD.positive.))
+
+forKatherine
+# write.csv(forKatherine,"FLT3.ITD_Manuscript_Cohort_with_RNAseq.csv", row.names = FALSE)
+```
+
+
+#Unsupervised Clustering
+
+
+
+#Perform Differential Expression
+
+
+
+#QC Plots 
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
